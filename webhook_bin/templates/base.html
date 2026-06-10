@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title if title else "Webhook Bin" }}</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script defer src="/static/app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <a class="brand" href="/">Webhook Bin</a>
+        <p class="subtitle">Local webhook inbox for headers, body, and payload inspection</p>
+      </div>
+      <div class="toolbar">
+        <div class="timezone-toggle" data-timezone-toggle>
+          <button type="button" class="toggle-btn active" data-timezone="utc">UTC</button>
+          <button type="button" class="toggle-btn" data-timezone="pt">PT</button>
+        </div>
+        <a class="ghost" href="/docs">API docs</a>
+      </div>
+    </header>
+    <main class="shell">
+      {% block content %}{% endblock %}
+    </main>
+    <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>

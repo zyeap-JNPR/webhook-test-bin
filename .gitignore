@@ -1,0 +1,53 @@
+# --- Python bytecode / caches ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Tool caches / test artifacts ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# --- Build / packaging ---
+build/
+dist/
+site/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# --- Logs / runtime files ---
+*.log
+*.pid
+
+# --- Local env files ---
+.env
+.env.*
+!.env.example
+
+# --- Editor / OS ---
+.DS_Store
+.idea/
+.vscode/
+
+# --- Repo-specific local data/artifacts ---
+data/
+webhook_bin/data/
+.playwright-mcp/
+homepage-layout.png

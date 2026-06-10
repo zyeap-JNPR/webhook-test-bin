@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="card-head">
+    <div>
+      <h1>{{ bin.name }}</h1>
+      <p class="muted">{{ bin.id }}</p>
+    </div>
+    <div class="toolbar">
+      <a class="ghost" href="/">Back</a>
+      <form method="post" action="/api/bins/{{ bin.id }}/seed">
+        <button type="submit">Seed sample</button>
+      </form>
+      <button type="button" class="danger" data-delete-bin="{{ bin.id }}" data-delete-redirect="/">Delete bin</button>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div><strong>POST URL</strong> <code id="ingest-url">{{ base_url }}/hooks/{{ bin.id }}</code></div>
+    <div class="toolbar">
+      <span id="live-status" class="pill">Live: polling</span>
+      <button type="button" class="copy-btn" data-copy-target="ingest-url">Copy</button>
+      <a class="ghost" href="/api/bins/{{ bin.id }}/export.ndjson">Export NDJSON</a>
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="card-head">
+    <h2>Messages</h2>
+    <div class="toolbar">
+      <button type="button" id="refresh-btn">Refresh</button>
+      <button type="button" id="load-more-btn">Load more</button>
+    </div>
+  </div>
+  <form id="message-filter-form" class="inline-form">
+    <select name="method">
+      <option value="">All methods</option>
+      <option value="POST">POST</option>
+      <option value="PUT">PUT</option>
+      <option value="PATCH">PATCH</option>
+      <option value="DELETE">DELETE</option>
+      <option value="OPTIONS">OPTIONS</option>
+    </select>
+    <input name="q" placeholder="Search path/body/header..." />
+    <input name="header_key" placeholder="Header key (optional)" />
+    <input name="header_value" placeholder="Header value (optional)" />
+    <button type="submit">Apply</button>
+  </form>
+  <div id="messages" data-bin-id="{{ bin.id }}" class="message-list"></div>
+</section>
+
+<section class="panel">
+  <h2>Selected message</h2>
+  <div id="message-detail" class="detail-empty">Pick message to see headers and body.</div>
+</section>
+{% endblock %}

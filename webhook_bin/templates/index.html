@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero panel" data-homepage-root data-base-url="{{ base_url }}">
+  <div class="hero-copy">
+    <p class="eyebrow">Webhook bin</p>
+    <h1>Catch and inspect webhook data</h1>
+    <p class="muted">
+      Create a bin, point any webhook sender at its ingest URL, then inspect headers and payloads in one place.
+    </p>
+    <form id="create-bin-form" class="inline-form">
+      <input name="name" placeholder="Bin name" />
+      <button type="submit">Create bin</button>
+    </form>
+  </div>
+  <div class="hero-stats">
+    <div class="stat">
+      <span class="stat-label">Bins</span>
+      <span class="stat-value" data-homepage-total-bins>{{ total_bins }}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Messages</span>
+      <span class="stat-value" data-homepage-total-messages>{{ total_messages }}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Latest activity</span>
+      <span class="stat-value" data-homepage-latest-activity data-ui-timestamp data-iso="{{ latest_activity or '' }}">{{ latest_activity or "—" }}</span>
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="card-head">
+    <div>
+      <h2>Bins</h2>
+      <p class="muted">Select a bin to see ingest URL, message count, and last delivery.</p>
+    </div>
+  </div>
+</section>
+
+<section class="grid" data-homepage-bins>
+  {% for bin in bins %}
+  <article class="card">
+    <div class="card-head">
+      <div>
+        <h2><a href="/bins/{{ bin.id }}">{{ bin.name }}</a></h2>
+        <p class="muted">{{ bin.id }}</p>
+      </div>
+      <div class="card-actions">
+        <span class="pill">{{ bin.message_count }} msgs</span>
+        <button type="button" class="danger" data-delete-bin="{{ bin.id }}">Delete</button>
+      </div>
+    </div>
+    <dl class="meta">
+      <div><dt>Ingest</dt><dd><code>{{ base_url }}/hooks/{{ bin.id }}</code></dd></div>
+      <div><dt>Dashboard</dt><dd><code>{{ base_url }}/bins/{{ bin.id }}</code></dd></div>
+      <div><dt>Last msg</dt><dd><span data-ui-timestamp data-iso="{{ bin.last_message_at or '' }}">{{ bin.last_message_at or "—" }}</span></dd></div>
+    </dl>
+  </article>
+  {% else %}
+  <article class="empty">
+    <h2>No bins yet</h2>
+    <p>Create one, then POST to its ingest URL.</p>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}
