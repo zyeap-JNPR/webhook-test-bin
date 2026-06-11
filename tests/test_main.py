@@ -319,6 +319,32 @@ def test_export_endpoints(client):
     assert f"\"bin_id\": \"{bin_id}\"" in ndjson.text
 
 
+def test_visitor_log_records_page_visits(client):
+    # Dashboard page load should be logged
+    client.get("/")
+    visitors = client.get("/api/visitors")
+    assert visitors.status_code == 200
+    entries = visitors.json()["visitors"]
+    assert len(entries) >= 1
+    visit = entries[0]
+    assert visit["path"] == "/"
+    assert visit["status_code"] == 200
+    assert "timestamp" in visit
+    assert "duration_ms" in visit
+
+
+def test_visitor_log_skips_noise_paths(client):
+    initial = len(client.get("/api/visitors").json()["visitors"])
+    # These should not be logged
+    client.get("/healthz")
+    client.get("/metrics")
+    client.get("/api/bins")
+    client.get("/favicon.svg")
+    after = len(client.get("/api/visitors").json()["visitors"])
+    # /api/visitors itself should also not be logged; no new rows from noise paths
+    assert after == initial
+
+
 def test_stream_endpoint(client):
     db.create_bin("stream01", "stream")
 

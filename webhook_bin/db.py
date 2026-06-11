@@ -69,6 +69,20 @@ def initialize() -> None:
                 ON webhook_messages (bin_id);
             CREATE INDEX IF NOT EXISTS idx_webhook_messages_received_at
                 ON webhook_messages (received_at);
+
+            CREATE TABLE IF NOT EXISTS visitor_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                ip TEXT,
+                user_agent TEXT,
+                path TEXT NOT NULL,
+                referer TEXT,
+                status_code INTEGER,
+                duration_ms INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_visitor_log_timestamp
+                ON visitor_log (timestamp);
             """
         )
         columns = {row[1] for row in conn.execute("PRAGMA table_info('webhook_messages')").fetchall()}
@@ -342,6 +356,68 @@ def restore_database(source_path: str) -> None:
 
 
 def row_to_message(row: sqlite3.Row, include_body: bool) -> dict[str, Any]:
+    headers = json.loads(row["headers_json"]) if row["headers_json"] else {}
+    body_text = row["body_text"]
+    body_json = None
+    content_type = (row["content_type"] or "").lower()
+    if "json" in content_type:
+        try:
+            body_json = json.loads(body_text)
+        except json.JSONDecodeError:
+            body_json = None
+    message = {
+        "id": row["id"],
+        "bin_id": row["bin_id"],
+        "received_at": row["received_at"],
+        "method": row["method"],
+        "path": row["path"],
+        "query_string": row["query_string"],
+        "remote_addr": row["remote_addr"],
+        "content_type": row["content_type"],
+        "headers": headers,
+        "body_size": len(base64.b64decode(row["body_base64"])),
+        "body_preview": body_text[:500],
+        "signature_status": row["signature_status"],
+        "signature_details": row["signature_details"],
+    }
+    if body_json is not None:
+        message["body_json"] = body_json
+    if include_body:
+        message["body_text"] = body_text
+        message["body_base64"] = row["body_base64"]
+    return message
+
+
+def log_visitor(
+    ip: str | None,
+    user_agent: str | None,
+    path: str,
+    referer: str | None,
+    status_code: int,
+    duration_ms: int,
+) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO visitor_log (timestamp, ip, user_agent, path, referer, status_code, duration_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (utc_now(), ip, user_agent, path, referer, status_code, duration_ms),
+        )
+
+
+def list_visitors(limit: int = 200) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, timestamp, ip, user_agent, path, referer, status_code, duration_ms
+            FROM visitor_log
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
     headers = json.loads(row["headers_json"]) if row["headers_json"] else {}
     body_text = row["body_text"]
     body_json = None

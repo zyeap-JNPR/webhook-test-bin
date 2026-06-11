@@ -9,6 +9,7 @@ import os
 import secrets
 import shlex
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import db
 
@@ -53,6 +55,50 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Webhook Bin", version="0.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+# Paths to skip visitor logging (noise: health checks, assets, API polling, ingest)
+_VISITOR_LOG_SKIP_PREFIXES = ("/static/", "/healthz", "/metrics", "/favicon", "/api/", "/hooks/")
+
+
+class VisitorLogMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start = time.monotonic()
+        response = await call_next(request)
+        duration_ms = int((time.monotonic() - start) * 1000)
+        path = request.url.path
+        if not any(path.startswith(p) for p in _VISITOR_LOG_SKIP_PREFIXES):
+            ip = (
+                request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+                or (request.client.host if request.client else None)
+            )
+            ua = request.headers.get("user-agent")
+            referer = request.headers.get("referer")
+            LOGGER.info(
+                json.dumps({
+                    "event": "page_visit",
+                    "ip": ip,
+                    "user_agent": ua,
+                    "path": path,
+                    "referer": referer,
+                    "status_code": response.status_code,
+                    "duration_ms": duration_ms,
+                })
+            )
+            try:
+                db.log_visitor(
+                    ip=ip,
+                    user_agent=ua,
+                    path=path,
+                    referer=referer,
+                    status_code=response.status_code,
+                    duration_ms=duration_ms,
+                )
+            except Exception:
+                pass
+        return response
+
+
+app.add_middleware(VisitorLogMiddleware)
 
 FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <rect width="64" height="64" rx="16" fill="#11182c"/>
@@ -385,6 +431,11 @@ async def ingest_hook(bin_id: str, request: Request):
 @app.get("/healthz")
 def healthz():
     return {"status": "ok"}
+
+
+@app.get("/api/visitors")
+def api_visitors(limit: int = 200):
+    return {"visitors": db.list_visitors(limit=max(1, min(limit, 1000)))}
 
 
 @app.get("/metrics", response_class=Response)
