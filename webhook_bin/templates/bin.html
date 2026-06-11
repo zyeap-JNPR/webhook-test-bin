@@ -27,39 +27,43 @@
 
 <div class="split-layout">
   <section class="panel split-panel" id="messages-panel">
-    <div class="card-head">
-      <h2>Messages <span id="messages-count" class="count-badge"></span></h2>
-      <div class="toolbar">
-        <select id="page-size-select" title="Messages per page">
-          <option value="25">25 / page</option>
-          <option value="50">50 / page</option>
-          <option value="100">100 / page</option>
-        </select>
-        <button type="button" id="refresh-btn">Refresh</button>
-        <button type="button" id="load-more-btn" style="display:none">Load more</button>
+    <div class="messages-header">
+      <div class="messages-title-row">
+        <h2>Messages <span id="messages-count" class="count-badge"></span></h2>
+        <div class="messages-controls">
+          <select id="page-size-select" title="Messages per page">
+            <option value="25">25 / page</option>
+            <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
+          </select>
+          <button type="button" id="refresh-btn">Refresh</button>
+        </div>
       </div>
+      <form id="message-filter-form" class="filter-form">
+        <div class="filter-row">
+          <select name="method">
+            <option value="">All methods</option>
+            <option value="POST">POST</option>
+            <option value="PUT">PUT</option>
+            <option value="PATCH">PATCH</option>
+            <option value="DELETE">DELETE</option>
+            <option value="OPTIONS">OPTIONS</option>
+          </select>
+          <input name="q" placeholder="Search path/body/header..." />
+          <button type="submit">Apply</button>
+          <button type="button" id="filter-reset-btn" class="ghost">Reset</button>
+          <button type="button" id="filter-advanced-btn" class="ghost">Advanced ▾</button>
+        </div>
+        <div id="filter-advanced" class="filter-advanced hidden">
+          <input name="header_key" placeholder="Header key" />
+          <input name="header_value" placeholder="Header value" />
+        </div>
+      </form>
     </div>
-    <form id="message-filter-form" class="filter-form">
-      <div class="filter-row">
-        <select name="method">
-          <option value="">All methods</option>
-          <option value="POST">POST</option>
-          <option value="PUT">PUT</option>
-          <option value="PATCH">PATCH</option>
-          <option value="DELETE">DELETE</option>
-          <option value="OPTIONS">OPTIONS</option>
-        </select>
-        <input name="q" placeholder="Search path/body/header..." />
-        <button type="submit">Apply</button>
-        <button type="button" id="filter-reset-btn" class="ghost">Reset</button>
-        <button type="button" id="filter-advanced-btn" class="ghost">Advanced ▾</button>
-      </div>
-      <div id="filter-advanced" class="filter-advanced hidden">
-        <input name="header_key" placeholder="Header key" />
-        <input name="header_value" placeholder="Header value" />
-      </div>
-    </form>
     <div id="messages" data-bin-id="{{ bin.id }}" class="message-list message-list-scroll"></div>
+    <div class="messages-footer">
+      <button type="button" id="load-more-btn" style="display:none">Load more</button>
+    </div>
   </section>
 
   <section class="panel split-panel" id="detail-panel">

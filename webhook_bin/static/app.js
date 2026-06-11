@@ -61,6 +61,10 @@ let currentFilters = { method: "", q: "", headerKey: "", headerValue: "" };
 let currentPageSize = Number(localStorage.getItem("ui-page-size") || "25");
 // message id (number) -> full detail object; never invalidated (messages are immutable)
 const messageDetailCache = new Map();
+// message id (number) -> slim list object; used for instant optimistic render
+const listMessageCache = new Map();
+// message ids with an in-flight prefetch, to avoid duplicate hover fetches
+const prefetchInFlight = new Set();
 let currentAbortController = null;
 
 function formatTimestamp(value) {
@@ -187,7 +191,11 @@ function bodyModeButton(mode, label, active) {
 function renderMessageDetail(message) {
   const detail = document.getElementById("message-detail");
   if (!detail) return;
+  const partial = message._partial === true;
   const hasJson = Boolean(message.body_json);
+  const headersHtml = (!partial || message.headers)
+    ? `<pre class="message-body">${escapeHtml(JSON.stringify(message.headers || {}, null, 2))}</pre>`
+    : `<pre class="message-body muted">Loading headers…</pre>`;
   detail.classList.remove("detail-empty");
   detail.innerHTML = `
    <h3 class="section-title">${methodPill(message.method)} #${message.id}</h3>
@@ -200,7 +208,7 @@ function renderMessageDetail(message) {
      <a class="ghost" href="/api/messages/${message.id}/export">Download JSON</a>
    </div>
    <h4>Headers</h4>
-   <pre class="message-body">${escapeHtml(JSON.stringify(message.headers, null, 2))}</pre>
+   ${headersHtml}
    <div class="body-head">
      <h4>Body</h4>
      ${hasJson ? `<div class="body-toggle">${bodyModeButton("pretty", "Pretty", bodyJsonMode === "pretty")}${bodyModeButton("compact", "Compact", bodyJsonMode === "compact")}</div>` : ""}
@@ -216,6 +224,25 @@ function renderMessageDetail(message) {
   });
 }
 
+function setActiveMessage(id) {
+  document.querySelectorAll(".message-item").forEach((el) => {
+    el.classList.toggle("active", Number(el.dataset.messageId) === id);
+  });
+}
+
+function prefetchMessage(messageId) {
+  const id = Number(messageId);
+  if (messageDetailCache.has(id) || prefetchInFlight.has(id)) return;
+  prefetchInFlight.add(id);
+  fetch(`/api/messages/${id}`)
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data) => {
+      if (data && data.message) messageDetailCache.set(id, data.message);
+    })
+    .catch(() => {})
+    .finally(() => prefetchInFlight.delete(id));
+}
+
 async function showMessage(messageId) {
   const id = Number(messageId);
 
@@ -226,9 +253,7 @@ async function showMessage(messageId) {
   }
 
   // Mark active immediately
-  document.querySelectorAll(".message-item").forEach((el) => {
-    el.classList.toggle("active", Number(el.dataset.messageId) === id);
-  });
+  setActiveMessage(id);
 
   // Serve from cache (already fully fetched)
   if (messageDetailCache.has(id)) {
@@ -236,6 +261,14 @@ async function showMessage(messageId) {
     bodyJsonMode = "pretty";
     renderMessageDetail(currentMessage);
     return;
+  }
+
+  // Optimistic instant render from slim list data while the full detail loads
+  const listMsg = listMessageCache.get(id);
+  if (listMsg) {
+    currentMessage = { ...listMsg, _partial: true };
+    bodyJsonMode = "pretty";
+    renderMessageDetail(currentMessage);
   }
 
   // Fetch full detail
@@ -251,9 +284,7 @@ async function showMessage(messageId) {
     bodyJsonMode = "pretty";
     renderMessageDetail(currentMessage);
     // Re-apply active in case a concurrent refreshMessages cleared it
-    document.querySelectorAll(".message-item").forEach((el) => {
-      el.classList.toggle("active", Number(el.dataset.messageId) === id);
-    });
+    setActiveMessage(id);
   } catch (err) {
     if (err.name === "AbortError") return;
     throw err;
@@ -273,6 +304,11 @@ async function refreshMessages({ append = false } = {}) {
   });
   nextBeforeId = data.next_before_id;
   const totalCount = data.bin?.message_count ?? null;
+
+  // Cache slim list rows for instant optimistic detail render on click
+  for (const msg of data.messages) {
+    listMessageCache.set(msg.id, msg);
+  }
 
   const html = data.messages.map(messageCard).join("") || `<p class="muted">No messages yet.</p>`;
 
@@ -308,6 +344,8 @@ async function refreshMessages({ append = false } = {}) {
   renderTimestamps(container);
   container.querySelectorAll(".message-item").forEach((button) => {
     button.onclick = () => showMessage(button.dataset.messageId).catch((error) => showToast(error.message, "error"));
+    // Warm the detail cache on hover so the click feels instant
+    button.onmouseenter = () => prefetchMessage(button.dataset.messageId);
   });
 
   // Auto-select first message on initial (non-append, no active) load
