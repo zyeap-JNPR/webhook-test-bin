@@ -30,8 +30,13 @@
     <div class="card-head">
       <h2>Messages <span id="messages-count" class="count-badge"></span></h2>
       <div class="toolbar">
+        <select id="page-size-select" title="Messages per page">
+          <option value="25">25 / page</option>
+          <option value="50">50 / page</option>
+          <option value="100">100 / page</option>
+        </select>
         <button type="button" id="refresh-btn">Refresh</button>
-        <button type="button" id="load-more-btn">Load more</button>
+        <button type="button" id="load-more-btn" style="display:none">Load more</button>
       </div>
     </div>
     <form id="message-filter-form" class="filter-form">

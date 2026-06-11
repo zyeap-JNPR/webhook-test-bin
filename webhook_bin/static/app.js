@@ -58,10 +58,9 @@ let bodyJsonMode = "pretty";
 let uiTimezone = localStorage.getItem("ui-timezone") || "utc";
 let nextBeforeId = null;
 let currentFilters = { method: "", q: "", headerKey: "", headerValue: "" };
+let currentPageSize = Number(localStorage.getItem("ui-page-size") || "25");
 // message id (number) -> full detail object; never invalidated (messages are immutable)
 const messageDetailCache = new Map();
-// message id (number) -> list-level object (no body_text/body_base64)
-const listMessageCache = new Map();
 let currentAbortController = null;
 
 function formatTimestamp(value) {
@@ -149,7 +148,9 @@ function renderHomepage(data) {
 function messageCard(message) {
   const rawPreview = message.body_preview || "";
   const body = rawPreview.length > 80 ? rawPreview.slice(0, 80) + "…" : rawPreview;
-  const badge = message.body_json ? `<span class="pill">JSON</span>` : "";
+  // slim list uses has_json flag; full detail object has body_json
+  const isJson = message.has_json != null ? message.has_json : Boolean(message.body_json);
+  const badge = isJson ? `<span class="pill">JSON</span>` : "";
   const sigStatus = message.signature_status;
   const sig = (sigStatus && sigStatus !== "disabled")
     ? `<span class="pill pill-sig-${escapeHtml(sigStatus)}">sig:${escapeHtml(sigStatus)}</span>`
@@ -224,12 +225,12 @@ async function showMessage(messageId) {
     currentAbortController = null;
   }
 
-  // Mark active immediately (before any async work)
+  // Mark active immediately
   document.querySelectorAll(".message-item").forEach((el) => {
     el.classList.toggle("active", Number(el.dataset.messageId) === id);
   });
 
-  // Serve from detail cache (already fully fetched)
+  // Serve from cache (already fully fetched)
   if (messageDetailCache.has(id)) {
     currentMessage = messageDetailCache.get(id);
     bodyJsonMode = "pretty";
@@ -237,20 +238,7 @@ async function showMessage(messageId) {
     return;
   }
 
-  // Optimistic render from list cache — show immediately with what we have
-  const listMsg = listMessageCache.get(id);
-  if (listMsg) {
-    currentMessage = listMsg;
-    bodyJsonMode = "pretty";
-    renderMessageDetail(currentMessage);
-    // JSON messages have all displayable data in the list response; no fetch needed
-    if (listMsg.body_json != null) {
-      messageDetailCache.set(id, listMsg);
-      return;
-    }
-  }
-
-  // Fetch full detail for non-JSON messages or first load without list cache
+  // Fetch full detail
   const ac = new AbortController();
   currentAbortController = ac;
   try {
@@ -279,19 +267,12 @@ async function refreshMessages({ append = false } = {}) {
   if (!container) return;
   const binId = container.dataset.binId;
   const data = await loadMessages(binId, {
-    limit: 100,
+    limit: currentPageSize,
     beforeId: append ? nextBeforeId : null,
     ...currentFilters,
   });
   nextBeforeId = data.next_before_id;
   const totalCount = data.bin?.message_count ?? null;
-
-  // Populate list cache with fresh data
-  for (const msg of data.messages) {
-    if (!messageDetailCache.has(msg.id)) {
-      listMessageCache.set(msg.id, msg);
-    }
-  }
 
   const html = data.messages.map(messageCard).join("") || `<p class="muted">No messages yet.</p>`;
 
@@ -308,25 +289,40 @@ async function refreshMessages({ append = false } = {}) {
     container.scrollTop = prevScrollTop;
   }
 
-  // Show exact total from bin metadata; fall back to DOM count when filtered
+  // Count badge: show "Showing X of Y total" or filtered count
   const countEl = document.getElementById("messages-count");
   if (countEl) {
     const isFiltered = Object.values(currentFilters).some(Boolean);
+    const shownCount = container.querySelectorAll(".message-item").length;
     if (isFiltered) {
-      const domCount = container.querySelectorAll(".message-item").length;
-      countEl.textContent = domCount > 0 ? `(${domCount}${nextBeforeId ? "+" : ""})` : "";
+      countEl.textContent = shownCount > 0 ? `(${shownCount}${nextBeforeId ? "+" : ""} filtered)` : "";
+    } else if (totalCount != null && totalCount > 0) {
+      countEl.textContent = shownCount < totalCount
+        ? `(${shownCount} of ${totalCount})`
+        : `(${totalCount})`;
     } else {
-      countEl.textContent = totalCount != null && totalCount > 0 ? `(${totalCount})` : "";
+      countEl.textContent = "";
     }
   }
+
   renderTimestamps(container);
   container.querySelectorAll(".message-item").forEach((button) => {
     button.onclick = () => showMessage(button.dataset.messageId).catch((error) => showToast(error.message, "error"));
   });
+
+  // Auto-select first message on initial (non-append, no active) load
+  if (!append && !container.querySelector(".message-item.active")) {
+    const first = container.querySelector(".message-item");
+    if (first) {
+      showMessage(first.dataset.messageId).catch(() => {});
+    }
+  }
+
   const loadMoreBtn = document.getElementById("load-more-btn");
   if (loadMoreBtn) {
     loadMoreBtn.disabled = !nextBeforeId;
     loadMoreBtn.style.display = nextBeforeId ? "" : "none";
+    loadMoreBtn.textContent = nextBeforeId ? `Load more (${currentPageSize})` : "Load more";
   }
 }
 
@@ -399,6 +395,16 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("load-more-btn")?.addEventListener("click", () => {
       refreshMessages({ append: true }).catch((error) => showToast(error.message, "error"));
     });
+    const pageSizeSelect = document.getElementById("page-size-select");
+    if (pageSizeSelect) {
+      pageSizeSelect.value = String(currentPageSize);
+      pageSizeSelect.addEventListener("change", () => {
+        currentPageSize = Number(pageSizeSelect.value);
+        localStorage.setItem("ui-page-size", String(currentPageSize));
+        nextBeforeId = null;
+        refreshMessages().catch((error) => showToast(error.message, "error"));
+      });
+    }
     document.getElementById("message-filter-form")?.addEventListener("submit", (event) => {
       event.preventDefault();
       const formData = new FormData(event.target);

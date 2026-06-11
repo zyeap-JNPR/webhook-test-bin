@@ -266,7 +266,7 @@ def list_messages(
     if len(rows) > limit:
         next_before_id = rows[limit - 1]["id"]
         rows = rows[:limit]
-    return [row_to_message(row, include_body=False) for row in rows], next_before_id
+    return [row_to_message(row, include_body=False, slim=True) for row in rows], next_before_id
 
 
 def get_message(message_id: int) -> dict[str, Any] | None:
@@ -355,11 +355,27 @@ def restore_database(source_path: str) -> None:
             source_conn.backup(dest_conn)
 
 
-def row_to_message(row: sqlite3.Row, include_body: bool) -> dict[str, Any]:
-    headers = json.loads(row["headers_json"]) if row["headers_json"] else {}
+def row_to_message(row: sqlite3.Row, include_body: bool, slim: bool = False) -> dict[str, Any]:
     body_text = row["body_text"]
-    body_json = None
     content_type = (row["content_type"] or "").lower()
+
+    if slim:
+        # Lightweight card representation: no headers, no body_json, short preview
+        return {
+            "id": row["id"],
+            "bin_id": row["bin_id"],
+            "received_at": row["received_at"],
+            "method": row["method"],
+            "path": row["path"],
+            "query_string": row["query_string"],
+            "body_size": len(base64.b64decode(row["body_base64"])),
+            "body_preview": body_text[:120],
+            "has_json": "json" in content_type,
+            "signature_status": row["signature_status"],
+        }
+
+    headers = json.loads(row["headers_json"]) if row["headers_json"] else {}
+    body_json = None
     if "json" in content_type:
         try:
             body_json = json.loads(body_text)

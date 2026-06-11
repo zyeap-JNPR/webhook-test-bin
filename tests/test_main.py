@@ -177,7 +177,31 @@ def test_ingest_signature_verification_mist_v2(client, monkeypatch: pytest.Monke
     assert sent.json()["message"]["signature_status"] == "verified"
 
 
-def test_ingest_hook_supports_methods(client):
+def test_list_messages_returns_slim_shape(client):
+    """List endpoint must return slim card shape: no headers/body_json, has has_json, short preview."""
+    create = client.post("/api/bins", json={"name": "slim-list"})
+    bin_id = create.json()["bin"]["id"]
+
+    client.post(f"/hooks/{bin_id}", json={"topic": "audits", "events": [{"msg": "x" * 200}]})
+
+    res = client.get(f"/api/bins/{bin_id}/messages?limit=10")
+    assert res.status_code == 200
+    messages = res.json()["messages"]
+    assert len(messages) == 1
+    msg = messages[0]
+
+    # slim fields present
+    assert "has_json" in msg
+    assert msg["has_json"] is True
+    assert "body_preview" in msg
+    assert len(msg["body_preview"]) <= 120
+
+    # full-detail fields absent from list
+    for key in ("headers", "body_json", "body_text", "body_base64"):
+        assert key not in msg, f"{key} should not be in list response"
+
+
+
     create = client.post("/api/bins", json={"name": "methods"})
     bin_id = create.json()["bin"]["id"]
     for method in ("put", "patch", "delete", "options"):
