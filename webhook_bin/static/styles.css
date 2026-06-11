@@ -88,6 +88,37 @@ button:hover, .ghost:hover { border-color: var(--accent); }
 .meta div { display: grid; gap: 0.2rem; }
 .meta dt { color: var(--muted); font-size: 0.85rem; }
 .meta dd { margin: 0; overflow-wrap: anywhere; }
+/* Split layout: message list left, detail right */
+.split-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 42%) 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+.split-panel {
+  height: 75vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.split-panel .card-head,
+.split-panel .filter-form,
+.split-panel .section-title { flex-shrink: 0; }
+.filter-form { flex-wrap: wrap; }
+.message-list-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+.detail-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+@media (max-width: 1100px) {
+  .split-layout { grid-template-columns: 1fr; }
+  .split-panel { height: 50vh; }
+}
 .message-list { display: grid; gap: 0.75rem; }
 .message-item {
   display: grid;

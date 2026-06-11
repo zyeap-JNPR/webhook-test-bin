@@ -25,33 +25,35 @@
   </div>
 </section>
 
-<section class="panel">
-  <div class="card-head">
-    <h2>Messages</h2>
-    <div class="toolbar">
-      <button type="button" id="refresh-btn">Refresh</button>
-      <button type="button" id="load-more-btn">Load more</button>
+<div class="split-layout">
+  <section class="panel split-panel" id="messages-panel">
+    <div class="card-head">
+      <h2>Messages</h2>
+      <div class="toolbar">
+        <button type="button" id="refresh-btn">Refresh</button>
+        <button type="button" id="load-more-btn">Load more</button>
+      </div>
     </div>
-  </div>
-  <form id="message-filter-form" class="inline-form">
-    <select name="method">
-      <option value="">All methods</option>
-      <option value="POST">POST</option>
-      <option value="PUT">PUT</option>
-      <option value="PATCH">PATCH</option>
-      <option value="DELETE">DELETE</option>
-      <option value="OPTIONS">OPTIONS</option>
-    </select>
-    <input name="q" placeholder="Search path/body/header..." />
-    <input name="header_key" placeholder="Header key (optional)" />
-    <input name="header_value" placeholder="Header value (optional)" />
-    <button type="submit">Apply</button>
-  </form>
-  <div id="messages" data-bin-id="{{ bin.id }}" class="message-list"></div>
-</section>
+    <form id="message-filter-form" class="inline-form filter-form">
+      <select name="method">
+        <option value="">All methods</option>
+        <option value="POST">POST</option>
+        <option value="PUT">PUT</option>
+        <option value="PATCH">PATCH</option>
+        <option value="DELETE">DELETE</option>
+        <option value="OPTIONS">OPTIONS</option>
+      </select>
+      <input name="q" placeholder="Search path/body/header..." />
+      <input name="header_key" placeholder="Header key (optional)" />
+      <input name="header_value" placeholder="Header value (optional)" />
+      <button type="submit">Apply</button>
+    </form>
+    <div id="messages" data-bin-id="{{ bin.id }}" class="message-list message-list-scroll"></div>
+  </section>
 
-<section class="panel">
-  <h2>Selected message</h2>
-  <div id="message-detail" class="detail-empty">Pick message to see headers and body.</div>
-</section>
+  <section class="panel split-panel" id="detail-panel">
+    <h2 class="section-title">Message detail</h2>
+    <div id="message-detail" class="detail-empty detail-scroll">Pick a message to see headers and body.</div>
+  </section>
+</div>
 {% endblock %}
