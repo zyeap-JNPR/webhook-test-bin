@@ -28,15 +28,6 @@
   </div>
 </section>
 
-<section class="panel">
-  <div class="card-head">
-    <div>
-      <h2>Bins</h2>
-      <p class="muted">Select a bin to see ingest URL, message count, and last delivery.</p>
-    </div>
-  </div>
-</section>
-
 <section class="grid" data-homepage-bins>
   {% for bin in bins %}
   <article class="card">
@@ -45,16 +36,21 @@
         <h2><a href="/bins/{{ bin.id }}">{{ bin.name }}</a></h2>
         <p class="muted">{{ bin.id }}</p>
       </div>
-      <div class="card-actions">
-        <span class="pill">{{ bin.message_count }} msgs</span>
-        <button type="button" class="danger" data-delete-bin="{{ bin.id }}">Delete</button>
-      </div>
+      <span class="pill">{{ bin.message_count }} msgs</span>
     </div>
     <dl class="meta">
-      <div><dt>Ingest</dt><dd><code>{{ base_url }}/hooks/{{ bin.id }}</code></dd></div>
-      <div><dt>Dashboard</dt><dd><code>{{ base_url }}/bins/{{ bin.id }}</code></dd></div>
+      <div>
+        <dt>Ingest URL</dt>
+        <dd class="meta-url-row">
+          <code>/hooks/{{ bin.id }}</code>
+          <button type="button" class="icon-btn" data-copy-text="{{ base_url }}/hooks/{{ bin.id }}">Copy</button>
+        </dd>
+      </div>
       <div><dt>Last msg</dt><dd><span data-ui-timestamp data-iso="{{ bin.last_message_at or '' }}">{{ bin.last_message_at or "—" }}</span></dd></div>
     </dl>
+    <div class="card-footer">
+      <button type="button" class="ghost-danger" data-delete-bin="{{ bin.id }}">Delete bin</button>
+    </div>
   </article>
   {% else %}
   <article class="empty">

@@ -31,6 +31,20 @@ if not LOGGER.handlers:
     logging.basicConfig(level=logging.INFO)
 
 
+def _static_hash() -> str:
+    """Short hash of static assets for cache-busting."""
+    h = hashlib.md5()
+    for name in ("app.js", "styles.css"):
+        p = BASE_DIR / "static" / name
+        if p.exists():
+            h.update(p.read_bytes())
+    return h.hexdigest()[:8]
+
+
+STATIC_VER = _static_hash()
+TEMPLATES.env.globals["static_ver"] = STATIC_VER
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     db.initialize()

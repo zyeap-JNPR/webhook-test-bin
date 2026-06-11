@@ -121,29 +121,38 @@ function renderHomepage(data) {
           <h2><a href="/bins/${bin.id}">${escapeHtml(bin.name)}</a></h2>
           <p class="muted">${escapeHtml(bin.id)}</p>
         </div>
-        <div class="card-actions">
-          <span class="pill">${bin.message_count} msgs</span>
-          <button type="button" class="danger" data-delete-bin="${bin.id}">Delete</button>
-        </div>
+        <span class="pill">${bin.message_count} msgs</span>
       </div>
       <dl class="meta">
-        <div><dt>Ingest</dt><dd><code>${baseUrl}/hooks/${bin.id}</code></dd></div>
-        <div><dt>Dashboard</dt><dd><code>${baseUrl}/bins/${bin.id}</code></dd></div>
+        <div>
+          <dt>Ingest URL</dt>
+          <dd class="meta-url-row">
+            <code>/hooks/${bin.id}</code>
+            <button type="button" class="icon-btn" data-copy-text="${escapeHtml(`${baseUrl}/hooks/${bin.id}`)}">Copy</button>
+          </dd>
+        </div>
         <div><dt>Last msg</dt><dd><span data-ui-timestamp data-iso="${escapeHtml(bin.last_message_at || "")}">${escapeHtml(bin.last_message_at || "—")}</span></dd></div>
       </dl>
+      <div class="card-footer">
+        <button type="button" class="ghost-danger" data-delete-bin="${bin.id}">Delete bin</button>
+      </div>
     </article>
   `).join("") || `<article class="empty"><h2>No bins yet</h2><p>Create one, then POST to its ingest URL.</p></article>`;
-  renderTimestamps(binsContainer);
+  renderTimestamps(document);
 }
 
 function messageCard(message) {
-  const body = message.body_preview || "";
+  const rawPreview = message.body_preview || "";
+  const body = rawPreview.length > 80 ? rawPreview.slice(0, 80) + "…" : rawPreview;
   const badge = message.body_json ? `<span class="pill">JSON</span>` : "";
-  const sig = message.signature_status ? `<span class="pill">sig:${escapeHtml(message.signature_status)}</span>` : "";
+  const sigStatus = message.signature_status;
+  const sig = (sigStatus && sigStatus !== "disabled")
+    ? `<span class="pill pill-sig-${escapeHtml(sigStatus)}">sig:${escapeHtml(sigStatus)}</span>`
+    : "";
   return `
     <button class="message-item" data-message-id="${message.id}">
       <div class="message-head">
-        <strong>#${message.id} ${message.method}</strong>
+        <span class="message-id-method">${methodPill(message.method)}<strong>#${message.id}</strong></span>
         ${badge}${sig}
         <span class="muted" data-ui-timestamp data-iso="${escapeHtml(message.received_at)}">${escapeHtml(message.received_at)}</span>
       </div>
@@ -151,6 +160,11 @@ function messageCard(message) {
       <div class="message-body">${escapeHtml(body)}</div>
     </button>
   `;
+}
+
+function methodPill(method) {
+  const m = escapeHtml(method || "");
+  return `<span class="method method-${m}">${m}</span>`;
 }
 
 function bodyContent(message) {
@@ -170,11 +184,11 @@ function renderMessageDetail(message) {
   const hasJson = Boolean(message.body_json);
   detail.classList.remove("detail-empty");
   detail.innerHTML = `
-   <h3 class="section-title">#${message.id} ${message.method}</h3>
+   <h3 class="section-title">${methodPill(message.method)} #${message.id}</h3>
    <p class="muted" data-ui-timestamp data-iso="${escapeHtml(message.received_at)}">${escapeHtml(message.received_at)}</p>
    <p><strong>Path:</strong> ${escapeHtml(message.path)}${message.query_string ? `?${escapeHtml(message.query_string)}` : ""}</p>
    <p><strong>Remote:</strong> ${escapeHtml(message.remote_addr || "—")} | <strong>Content-Type:</strong> ${escapeHtml(message.content_type || "—")}</p>
-   <p><strong>Signature:</strong> ${escapeHtml(message.signature_status || "n/a")} ${message.signature_details ? `(${escapeHtml(message.signature_details)})` : ""}</p>
+   ${message.signature_status && message.signature_status !== "disabled" ? `<p><strong>Signature:</strong> ${escapeHtml(message.signature_status)} ${message.signature_details ? `(${escapeHtml(message.signature_details)})` : ""}</p>` : ""}
    <div class="toolbar">
      <button type="button" data-copy-curl="/api/messages/${message.id}/curl">Copy cURL</button>
      <a class="ghost" href="/api/messages/${message.id}/export">Download JSON</a>
@@ -218,18 +232,33 @@ async function refreshMessages({ append = false } = {}) {
     ...currentFilters,
   });
   nextBeforeId = data.next_before_id;
+  const totalCount = data.bin?.message_count ?? null;
   const html = data.messages.map(messageCard).join("") || `<p class="muted">No messages yet.</p>`;
   if (append) {
     container.insertAdjacentHTML("beforeend", html);
   } else {
     container.innerHTML = html;
   }
+  // Show exact total from bin metadata; fall back to DOM count when filtered
+  const countEl = document.getElementById("messages-count");
+  if (countEl) {
+    const isFiltered = Object.values(currentFilters).some(Boolean);
+    if (isFiltered) {
+      const domCount = container.querySelectorAll(".message-item").length;
+      countEl.textContent = domCount > 0 ? `(${domCount}${nextBeforeId ? "+" : ""})` : "";
+    } else {
+      countEl.textContent = totalCount != null && totalCount > 0 ? `(${totalCount})` : "";
+    }
+  }
   renderTimestamps(container);
   container.querySelectorAll(".message-item").forEach((button) => {
     button.onclick = () => showMessage(button.dataset.messageId).catch((error) => showToast(error.message, "error"));
   });
   const loadMoreBtn = document.getElementById("load-more-btn");
-  if (loadMoreBtn) loadMoreBtn.disabled = !nextBeforeId;
+  if (loadMoreBtn) {
+    loadMoreBtn.disabled = !nextBeforeId;
+    loadMoreBtn.style.display = nextBeforeId ? "" : "none";
+  }
 }
 
 async function confirmDeleteBin(binId) {
@@ -313,6 +342,22 @@ document.addEventListener("DOMContentLoaded", () => {
       nextBeforeId = null;
       refreshMessages().catch((error) => showToast(error.message, "error"));
     });
+    document.getElementById("filter-reset-btn")?.addEventListener("click", () => {
+      const filterForm = document.getElementById("message-filter-form");
+      if (filterForm) filterForm.reset();
+      currentFilters = { method: "", q: "", headerKey: "", headerValue: "" };
+      nextBeforeId = null;
+      refreshMessages().catch((error) => showToast(error.message, "error"));
+    });
+    const advancedBtn = document.getElementById("filter-advanced-btn");
+    const advancedPanel = document.getElementById("filter-advanced");
+    if (advancedBtn && advancedPanel) {
+      advancedBtn.addEventListener("click", () => {
+        const open = !advancedPanel.classList.contains("hidden");
+        advancedPanel.classList.toggle("hidden", open);
+        advancedBtn.textContent = open ? "Advanced ▾" : "Advanced ▲";
+      });
+    }
     setInterval(() => {
       if (document.hidden) return;
       refreshMessages().catch(() => {});
@@ -344,9 +389,25 @@ document.addEventListener("DOMContentLoaded", () => {
     button.addEventListener("click", async () => {
       const target = document.getElementById(button.dataset.copyTarget);
       if (!target) return;
-      await navigator.clipboard.writeText(target.textContent || "");
-      showToast("Copied");
+      try {
+        await navigator.clipboard.writeText(target.textContent || "");
+        showToast("Copied");
+      } catch {
+        showToast("Copy failed", "error");
+      }
     });
+  });
+
+  // data-copy-text: copy inline text (used in dynamically rendered cards)
+  document.addEventListener("click", (event) => {
+    const copyTextBtn = event.target.closest("[data-copy-text]");
+    if (copyTextBtn && !copyTextBtn.closest("[data-delete-bin]")) {
+      event.preventDefault();
+      navigator.clipboard.writeText(copyTextBtn.dataset.copyText || "")
+        .then(() => showToast("Copied"))
+        .catch(() => showToast("Copy failed", "error"));
+      return;
+    }
   });
 
   document.addEventListener("click", (event) => {
@@ -369,4 +430,9 @@ document.addEventListener("DOMContentLoaded", () => {
         .catch((error) => showToast(error.message, "error"));
     }
   });
+
+  // Hide debug-only elements unless ?debug=1 in URL
+  if (!new URLSearchParams(location.search).get("debug")) {
+    document.querySelectorAll("[data-debug-only]").forEach((el) => { el.style.display = "none"; });
+  }
 });
