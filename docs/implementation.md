@@ -24,6 +24,7 @@
 - `headers_json`: full request headers
 - `body_text`: decoded body for display
 - `body_base64`: exact raw body
+- `signature_status`, `signature_details`: HMAC verification result (when enabled)
 
 ## Request flow
 
@@ -55,6 +56,13 @@
 - static assets ship with package
 - no external services required
 
+## Static assets
+
+- Frontend is vanilla JS + CSS shipped with the package under `static/`.
+- A short content hash is computed at startup and appended to asset URLs
+  (`app.js?v=<hash>`) so browsers always load the current version after a
+  deploy/restart.
+
 ## Public tunnel choice
 
-See `docs/public-access.md`. Short version: Cloudflare Tunnel is best default for public use; ngrok is best for quick demos.
+See `public-access.md`. Short version: Cloudflare Tunnel is best default for public use; ngrok is best for quick demos.
