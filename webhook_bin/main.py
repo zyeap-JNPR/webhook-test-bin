@@ -79,6 +79,7 @@ def verify_signature(headers: dict[str, str], body: bytes) -> tuple[str, str]:
     provided = (
         headers.get("x-signature-sha256")
         or headers.get("x-hub-signature-256")
+        or headers.get("x-mist-signature-v2")
         or headers.get("x-signature")
     )
     if not provided:
@@ -372,7 +373,13 @@ async def ingest_hook(bin_id: str, request: Request):
             }
         )
     )
-    return JSONResponse({"status": "stored", "message": message}, status_code=201)
+    ack = {
+        "id": message["id"],
+        "bin_id": message["bin_id"],
+        "received_at": message["received_at"],
+        "signature_status": message["signature_status"],
+    }
+    return JSONResponse({"status": "stored", "message": ack}, status_code=201)
 
 
 @app.get("/healthz")

@@ -37,6 +37,34 @@ curl -X POST http://127.0.0.1:8000/hooks/<bin_id> \
 Any webhook sender works the same way: POST to `/hooks/<bin_id>`, then inspect
 headers and parsed JSON in the dashboard.
 
+### Ingest response
+
+The ingest endpoint returns a minimal acknowledgement (HTTP 201) — it does
+**not** echo the payload back. This keeps sender-side delivery logs (e.g.
+Juniper Mist `resp_body`) small:
+
+```json
+{
+  "status": "stored",
+  "message": {
+    "id": 471,
+    "bin_id": "7f076a3c",
+    "received_at": "2026-06-11T15:21:26.166260+00:00",
+    "signature_status": "disabled"
+  }
+}
+```
+
+Full message detail (headers, parsed JSON, raw body) is available on the read
+endpoints below, not in the ingest response.
+
+### Signature headers
+
+When `WEBHOOK_BIN_HMAC_SECRET` is set, the first present header is verified as
+HMAC SHA256: `x-signature-sha256`, `x-hub-signature-256`,
+`x-mist-signature-v2` (Juniper Mist), or `x-signature`. A `sha256=` prefix is
+stripped before comparison.
+
 ## List bins
 
 ```bash

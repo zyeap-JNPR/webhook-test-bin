@@ -21,6 +21,8 @@ All settings are environment variables. Every variable is optional.
   tunnel gives you.
 - **HMAC** — when `WEBHOOK_BIN_HMAC_SECRET` is set, incoming requests are
   verified and each message shows a `verified` / `failed` / `missing` status.
+  Checked headers (first match wins): `x-signature-sha256`,
+  `x-hub-signature-256`, `x-mist-signature-v2`, `x-signature`.
 - **Retention** runs per bin; combine days + max-messages to cap disk usage on
   long-running deployments.
 

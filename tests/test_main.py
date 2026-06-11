@@ -144,6 +144,39 @@ def test_ingest_signature_verification(client, monkeypatch: pytest.MonkeyPatch):
     assert sent.json()["message"]["signature_status"] == "verified"
 
 
+def test_ingest_response_is_minimal_ack(client):
+    create = client.post("/api/bins", json={"name": "ack"})
+    bin_id = create.json()["bin"]["id"]
+
+    send = client.post(
+        f"/hooks/{bin_id}",
+        json={"event": "unit", "secret_field": "should-not-echo"},
+        headers={"x-unit": "yes"},
+    )
+    assert send.status_code == 201
+    ack = send.json()["message"]
+    assert set(ack.keys()) == {"id", "bin_id", "received_at", "signature_status"}
+    assert ack["bin_id"] == bin_id
+    # The ingest ack must not echo the payload, headers, or encoded body back.
+    for leaked in ("body_text", "body_base64", "body_json", "body_preview", "headers"):
+        assert leaked not in ack
+
+
+def test_ingest_signature_verification_mist_v2(client, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(main, "HMAC_SECRET", b"mist-secret")
+    create = client.post("/api/bins", json={"name": "mist"})
+    bin_id = create.json()["bin"]["id"]
+    body = b'{"topic":"audits"}'
+    sig = hmac.new(b"mist-secret", body, hashlib.sha256).hexdigest()
+    sent = client.post(
+        f"/hooks/{bin_id}",
+        content=body,
+        headers={"content-type": "application/json", "x-mist-signature-v2": sig},
+    )
+    assert sent.status_code == 201
+    assert sent.json()["message"]["signature_status"] == "verified"
+
+
 def test_ingest_hook_supports_methods(client):
     create = client.post("/api/bins", json={"name": "methods"})
     bin_id = create.json()["bin"]["id"]
