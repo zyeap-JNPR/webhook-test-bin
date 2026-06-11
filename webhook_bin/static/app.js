@@ -58,6 +58,11 @@ let bodyJsonMode = "pretty";
 let uiTimezone = localStorage.getItem("ui-timezone") || "utc";
 let nextBeforeId = null;
 let currentFilters = { method: "", q: "", headerKey: "", headerValue: "" };
+// message id (number) -> full detail object; never invalidated (messages are immutable)
+const messageDetailCache = new Map();
+// message id (number) -> list-level object (no body_text/body_base64)
+const listMessageCache = new Map();
+let currentAbortController = null;
 
 function formatTimestamp(value) {
   if (!value) return "—";
@@ -168,7 +173,7 @@ function methodPill(method) {
 }
 
 function bodyContent(message) {
-  if (!message.body_json) return escapeHtml(message.body_text || "");
+  if (!message.body_json) return escapeHtml(message.body_text || message.body_preview || "");
   return bodyJsonMode === "compact"
     ? escapeHtml(JSON.stringify(message.body_json))
     : escapeHtml(JSON.stringify(message.body_json, null, 2));
@@ -211,15 +216,62 @@ function renderMessageDetail(message) {
 }
 
 async function showMessage(messageId) {
-  const res = await fetch(`/api/messages/${messageId}`);
-  if (!res.ok) throw new Error("message detail failed");
-  const data = await res.json();
-  currentMessage = data.message;
-  bodyJsonMode = "pretty";
-  renderMessageDetail(currentMessage);
+  const id = Number(messageId);
+
+  // Cancel any pending detail fetch
+  if (currentAbortController) {
+    currentAbortController.abort();
+    currentAbortController = null;
+  }
+
+  // Mark active immediately (before any async work)
   document.querySelectorAll(".message-item").forEach((el) => {
-    el.classList.toggle("active", el.dataset.messageId === String(messageId));
+    el.classList.toggle("active", Number(el.dataset.messageId) === id);
   });
+
+  // Serve from detail cache (already fully fetched)
+  if (messageDetailCache.has(id)) {
+    currentMessage = messageDetailCache.get(id);
+    bodyJsonMode = "pretty";
+    renderMessageDetail(currentMessage);
+    return;
+  }
+
+  // Optimistic render from list cache — show immediately with what we have
+  const listMsg = listMessageCache.get(id);
+  if (listMsg) {
+    currentMessage = listMsg;
+    bodyJsonMode = "pretty";
+    renderMessageDetail(currentMessage);
+    // JSON messages have all displayable data in the list response; no fetch needed
+    if (listMsg.body_json != null) {
+      messageDetailCache.set(id, listMsg);
+      return;
+    }
+  }
+
+  // Fetch full detail for non-JSON messages or first load without list cache
+  const ac = new AbortController();
+  currentAbortController = ac;
+  try {
+    const res = await fetch(`/api/messages/${id}`, { signal: ac.signal });
+    if (!res.ok) throw new Error("message detail failed");
+    const data = await res.json();
+    if (currentAbortController !== ac) return; // superseded by a newer click
+    currentMessage = data.message;
+    messageDetailCache.set(id, currentMessage);
+    bodyJsonMode = "pretty";
+    renderMessageDetail(currentMessage);
+    // Re-apply active in case a concurrent refreshMessages cleared it
+    document.querySelectorAll(".message-item").forEach((el) => {
+      el.classList.toggle("active", Number(el.dataset.messageId) === id);
+    });
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    throw err;
+  } finally {
+    if (currentAbortController === ac) currentAbortController = null;
+  }
 }
 
 async function refreshMessages({ append = false } = {}) {
@@ -233,12 +285,29 @@ async function refreshMessages({ append = false } = {}) {
   });
   nextBeforeId = data.next_before_id;
   const totalCount = data.bin?.message_count ?? null;
+
+  // Populate list cache with fresh data
+  for (const msg of data.messages) {
+    if (!messageDetailCache.has(msg.id)) {
+      listMessageCache.set(msg.id, msg);
+    }
+  }
+
   const html = data.messages.map(messageCard).join("") || `<p class="muted">No messages yet.</p>`;
+
   if (append) {
     container.insertAdjacentHTML("beforeend", html);
   } else {
+    // Preserve scroll position and active selection across re-render
+    const prevScrollTop = container.scrollTop;
+    const activeId = container.querySelector(".message-item.active")?.dataset.messageId;
     container.innerHTML = html;
+    if (activeId) {
+      container.querySelector(`[data-message-id="${activeId}"]`)?.classList.add("active");
+    }
+    container.scrollTop = prevScrollTop;
   }
+
   // Show exact total from bin metadata; fall back to DOM count when filtered
   const countEl = document.getElementById("messages-count");
   if (countEl) {
