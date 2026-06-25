@@ -30,10 +30,17 @@ async function loadMessages(binId, params = {}) {
 }
 
 async function loadBins() {
-  const res = await fetch("/api/bins");
-  if (!res.ok) throw new Error("bin load failed");
-  return await res.json();
+  if (!loadBins.inFlight) {
+    loadBins.inFlight = (async () => {
+      const res = await fetch("/api/bins");
+      if (!res.ok) throw new Error("bin load failed");
+      return await res.json();
+    })();
+    loadBins.inFlight.finally(() => { loadBins.inFlight = null; });
+  }
+  return await loadBins.inFlight;
 }
+loadBins.inFlight = null;
 
 async function deleteBin(binId) {
   const res = await fetch(`/api/bins/${binId}`, { method: "DELETE" });
@@ -66,6 +73,10 @@ const listMessageCache = new Map();
 // message ids with an in-flight prefetch, to avoid duplicate hover fetches
 const prefetchInFlight = new Set();
 let currentAbortController = null;
+let messagesPollTimer = null;
+let homepagePollTimer = null;
+let streamRefreshDebounceTimer = null;
+let refreshMessagesInFlight = null;
 
 function formatTimestamp(value) {
   if (!value) return "—";
@@ -293,7 +304,7 @@ async function showMessage(messageId) {
   }
 }
 
-async function refreshMessages({ append = false } = {}) {
+async function runRefreshMessages({ append = false } = {}) {
   const container = document.getElementById("messages");
   if (!container) return;
   const binId = container.dataset.binId;
@@ -356,6 +367,17 @@ async function refreshMessages({ append = false } = {}) {
     }
   }
 
+  async function refreshMessages(options = {}) {
+    const { append = false } = options;
+    if (append) return await runRefreshMessages(options);
+    if (!refreshMessagesInFlight) {
+      refreshMessagesInFlight = runRefreshMessages(options).finally(() => {
+        refreshMessagesInFlight = null;
+      });
+    }
+    return await refreshMessagesInFlight;
+  }
+
   const loadMoreBtn = document.getElementById("load-more-btn");
   if (loadMoreBtn) {
     loadMoreBtn.disabled = !nextBeforeId;
@@ -391,26 +413,74 @@ async function handleDeleteBin(button) {
   }
 }
 
+function stopMessagesPolling() {
+  if (messagesPollTimer) {
+    clearTimeout(messagesPollTimer);
+    messagesPollTimer = null;
+  }
+}
+
+function startMessagesPolling(intervalMs) {
+  stopMessagesPolling();
+  const tick = async () => {
+    if (!document.hidden) await refreshMessages().catch(() => {});
+    messagesPollTimer = setTimeout(tick, intervalMs);
+  };
+  messagesPollTimer = setTimeout(tick, intervalMs);
+}
+
+function stopHomepagePolling() {
+  if (homepagePollTimer) {
+    clearTimeout(homepagePollTimer);
+    homepagePollTimer = null;
+  }
+}
+
+function startHomepagePolling(intervalMs) {
+  stopHomepagePolling();
+  const homepage = document.querySelector("[data-homepage-root]");
+  if (!homepage) return;
+  const tick = async () => {
+    if (!document.hidden) await loadBins().then(renderHomepage).catch(() => {});
+    homepagePollTimer = setTimeout(tick, intervalMs);
+  };
+  homepagePollTimer = setTimeout(tick, intervalMs);
+}
+
+function scheduleStreamRefresh() {
+  if (streamRefreshDebounceTimer) return;
+  streamRefreshDebounceTimer = setTimeout(() => {
+    streamRefreshDebounceTimer = null;
+    refreshMessages().catch(() => {});
+  }, 300);
+}
+
 function setupLiveStream(binId) {
   const statusEl = document.getElementById("live-status");
-  if (!window.EventSource || !statusEl) return;
+  if (!window.EventSource || !statusEl) return false;
   const source = new EventSource(`/api/bins/${binId}/stream`);
-  source.addEventListener("message", () => {
-    if (document.hidden) return;
-    refreshMessages().catch(() => {});
+  source.onopen = () => {
+    stopMessagesPolling();
     statusEl.textContent = "Live: connected";
     statusEl.classList.add("live-ok");
     statusEl.classList.remove("live-fallback");
+  };
+  source.addEventListener("message", () => {
+    if (document.hidden) return;
+    scheduleStreamRefresh();
   });
   source.onerror = () => {
     statusEl.textContent = "Live: fallback polling";
     statusEl.classList.remove("live-ok");
     statusEl.classList.add("live-fallback");
+    if (!messagesPollTimer) startMessagesPolling(15000);
   };
+  return true;
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  const POLL_INTERVAL_MS = 5000;
+  const HOMEPAGE_POLL_INTERVAL_MS = 30000;
+  const MESSAGE_FALLBACK_POLL_INTERVAL_MS = 15000;
 
   const form = document.getElementById("create-bin-form");
   if (form) {
@@ -426,7 +496,8 @@ document.addEventListener("DOMContentLoaded", () => {
     refreshMessages().catch((error) => {
       messages.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
     });
-    setupLiveStream(binId);
+    const hasLiveStream = setupLiveStream(binId);
+    if (!hasLiveStream) startMessagesPolling(MESSAGE_FALLBACK_POLL_INTERVAL_MS);
     document.getElementById("refresh-btn")?.addEventListener("click", () => {
       refreshMessages().catch((error) => showToast(error.message, "error"));
     });
@@ -471,19 +542,18 @@ document.addEventListener("DOMContentLoaded", () => {
         advancedBtn.textContent = open ? "Advanced ▾" : "Advanced ▲";
       });
     }
-    setInterval(() => {
-      if (document.hidden) return;
-      refreshMessages().catch(() => {});
-    }, POLL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) refreshMessages().catch(() => {});
+    });
   }
 
   const homepage = document.querySelector("[data-homepage-root]");
   if (homepage) {
     loadBins().then(renderHomepage).catch(() => {});
-    setInterval(() => {
-      if (document.hidden) return;
-      loadBins().then(renderHomepage).catch(() => {});
-    }, POLL_INTERVAL_MS);
+    startHomepagePolling(HOMEPAGE_POLL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) loadBins().then(renderHomepage).catch(() => {});
+    });
   }
 
   const timezoneToggle = document.querySelector("[data-timezone-toggle]");
