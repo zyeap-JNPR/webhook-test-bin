@@ -66,15 +66,13 @@ let uiTimezone = localStorage.getItem("ui-timezone") || "utc";
 let nextBeforeId = null;
 let currentFilters = { method: "", q: "", headerKey: "", headerValue: "" };
 let currentPageSize = Number(localStorage.getItem("ui-page-size") || "25");
+let knownTotalMessages = null;
 // message id (number) -> full detail object; never invalidated (messages are immutable)
 const messageDetailCache = new Map();
 // message id (number) -> slim list object; used for instant optimistic render
 const listMessageCache = new Map();
-// message ids with an in-flight prefetch, to avoid duplicate hover fetches
-const prefetchInFlight = new Set();
 let currentAbortController = null;
 let messagesPollTimer = null;
-let homepagePollTimer = null;
 let streamRefreshDebounceTimer = null;
 let refreshMessagesInFlight = null;
 
@@ -241,17 +239,27 @@ function setActiveMessage(id) {
   });
 }
 
-function prefetchMessage(messageId) {
-  const id = Number(messageId);
-  if (messageDetailCache.has(id) || prefetchInFlight.has(id)) return;
-  prefetchInFlight.add(id);
-  fetch(`/api/messages/${id}`)
-    .then((res) => (res.ok ? res.json() : null))
-    .then((data) => {
-      if (data && data.message) messageDetailCache.set(id, data.message);
-    })
-    .catch(() => {})
-    .finally(() => prefetchInFlight.delete(id));
+function wireMessageButton(button) {
+  button.onclick = () => showMessage(button.dataset.messageId).catch((error) => showToast(error.message, "error"));
+}
+
+function hasActiveFilters() {
+  return Object.values(currentFilters).some(Boolean);
+}
+
+function updateMessagesCount(container) {
+  const countEl = document.getElementById("messages-count");
+  if (!countEl) return;
+  const shownCount = container.querySelectorAll(".message-item").length;
+  if (hasActiveFilters()) {
+    countEl.textContent = shownCount > 0 ? `(${shownCount}${nextBeforeId ? "+" : ""} filtered)` : "";
+  } else if (knownTotalMessages != null && knownTotalMessages > 0) {
+    countEl.textContent = shownCount < knownTotalMessages
+      ? `(${shownCount} of ${knownTotalMessages})`
+      : `(${knownTotalMessages})`;
+  } else {
+    countEl.textContent = "";
+  }
 }
 
 async function showMessage(messageId) {
@@ -314,7 +322,7 @@ async function runRefreshMessages({ append = false } = {}) {
     ...currentFilters,
   });
   nextBeforeId = data.next_before_id;
-  const totalCount = data.bin?.message_count ?? null;
+  knownTotalMessages = data.bin?.message_count ?? null;
 
   // Cache slim list rows for instant optimistic detail render on click
   for (const msg of data.messages) {
@@ -336,47 +344,12 @@ async function runRefreshMessages({ append = false } = {}) {
     container.scrollTop = prevScrollTop;
   }
 
-  // Count badge: show "Showing X of Y total" or filtered count
-  const countEl = document.getElementById("messages-count");
-  if (countEl) {
-    const isFiltered = Object.values(currentFilters).some(Boolean);
-    const shownCount = container.querySelectorAll(".message-item").length;
-    if (isFiltered) {
-      countEl.textContent = shownCount > 0 ? `(${shownCount}${nextBeforeId ? "+" : ""} filtered)` : "";
-    } else if (totalCount != null && totalCount > 0) {
-      countEl.textContent = shownCount < totalCount
-        ? `(${shownCount} of ${totalCount})`
-        : `(${totalCount})`;
-    } else {
-      countEl.textContent = "";
-    }
-  }
+  updateMessagesCount(container);
 
   renderTimestamps(container);
   container.querySelectorAll(".message-item").forEach((button) => {
-    button.onclick = () => showMessage(button.dataset.messageId).catch((error) => showToast(error.message, "error"));
-    // Warm the detail cache on hover so the click feels instant
-    button.onmouseenter = () => prefetchMessage(button.dataset.messageId);
+    wireMessageButton(button);
   });
-
-  // Auto-select first message on initial (non-append, no active) load
-  if (!append && !container.querySelector(".message-item.active")) {
-    const first = container.querySelector(".message-item");
-    if (first) {
-      showMessage(first.dataset.messageId).catch(() => {});
-    }
-  }
-
-  async function refreshMessages(options = {}) {
-    const { append = false } = options;
-    if (append) return await runRefreshMessages(options);
-    if (!refreshMessagesInFlight) {
-      refreshMessagesInFlight = runRefreshMessages(options).finally(() => {
-        refreshMessagesInFlight = null;
-      });
-    }
-    return await refreshMessagesInFlight;
-  }
 
   const loadMoreBtn = document.getElementById("load-more-btn");
   if (loadMoreBtn) {
@@ -384,6 +357,17 @@ async function runRefreshMessages({ append = false } = {}) {
     loadMoreBtn.style.display = nextBeforeId ? "" : "none";
     loadMoreBtn.textContent = nextBeforeId ? `Load more (${currentPageSize})` : "Load more";
   }
+}
+
+async function refreshMessages(options = {}) {
+  const { append = false } = options;
+  if (append) return await runRefreshMessages(options);
+  if (!refreshMessagesInFlight) {
+    refreshMessagesInFlight = runRefreshMessages(options).finally(() => {
+      refreshMessagesInFlight = null;
+    });
+  }
+  return await refreshMessagesInFlight;
 }
 
 async function confirmDeleteBin(binId) {
@@ -429,22 +413,27 @@ function startMessagesPolling(intervalMs) {
   messagesPollTimer = setTimeout(tick, intervalMs);
 }
 
-function stopHomepagePolling() {
-  if (homepagePollTimer) {
-    clearTimeout(homepagePollTimer);
-    homepagePollTimer = null;
+function appendMessageFromStream(streamMessage) {
+  const container = document.getElementById("messages");
+  if (!container) return;
+  const id = Number(streamMessage.id);
+  if (!Number.isFinite(id)) return;
+  if (hasActiveFilters()) {
+    scheduleStreamRefresh();
+    return;
   }
-}
+  if (container.querySelector(`[data-message-id="${id}"]`)) return;
+  listMessageCache.set(id, streamMessage);
 
-function startHomepagePolling(intervalMs) {
-  stopHomepagePolling();
-  const homepage = document.querySelector("[data-homepage-root]");
-  if (!homepage) return;
-  const tick = async () => {
-    if (!document.hidden) await loadBins().then(renderHomepage).catch(() => {});
-    homepagePollTimer = setTimeout(tick, intervalMs);
-  };
-  homepagePollTimer = setTimeout(tick, intervalMs);
+  if (!container.querySelector(".message-item")) {
+    container.innerHTML = "";
+  }
+  container.insertAdjacentHTML("afterbegin", messageCard(streamMessage));
+  const button = container.querySelector(`[data-message-id="${id}"]`);
+  if (button) wireMessageButton(button);
+  renderTimestamps(container);
+  if (knownTotalMessages != null) knownTotalMessages += 1;
+  updateMessagesCount(container);
 }
 
 function scheduleStreamRefresh() {
@@ -464,10 +453,20 @@ function setupLiveStream(binId) {
     statusEl.textContent = "Live: connected";
     statusEl.classList.add("live-ok");
     statusEl.classList.remove("live-fallback");
+    if (!document.hidden) refreshMessages().catch(() => {});
   };
-  source.addEventListener("message", () => {
+  source.addEventListener("message", (event) => {
     if (document.hidden) return;
-    scheduleStreamRefresh();
+    try {
+      const payload = JSON.parse(event.data || "{}");
+      if (payload?.message) {
+        appendMessageFromStream(payload.message);
+      } else {
+        scheduleStreamRefresh();
+      }
+    } catch {
+      scheduleStreamRefresh();
+    }
   });
   source.onerror = () => {
     statusEl.textContent = "Live: fallback polling";
@@ -479,7 +478,6 @@ function setupLiveStream(binId) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  const HOMEPAGE_POLL_INTERVAL_MS = 30000;
   const MESSAGE_FALLBACK_POLL_INTERVAL_MS = 15000;
 
   const form = document.getElementById("create-bin-form");
@@ -550,7 +548,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const homepage = document.querySelector("[data-homepage-root]");
   if (homepage) {
     loadBins().then(renderHomepage).catch(() => {});
-    startHomepagePolling(HOMEPAGE_POLL_INTERVAL_MS);
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) loadBins().then(renderHomepage).catch(() => {});
     });

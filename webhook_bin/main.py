@@ -31,6 +31,7 @@ RETENTION_MAX_MESSAGES = int(os.getenv("WEBHOOK_BIN_RETENTION_MAX_MESSAGES", "0"
 LOGGER = logging.getLogger("webhook_bin")
 if not LOGGER.handlers:
     logging.basicConfig(level=logging.INFO)
+_STREAM_SUBSCRIBERS: dict[str, set[asyncio.Queue[dict[str, object]]]] = {}
 
 
 def _static_hash() -> str:
@@ -151,6 +152,44 @@ def message_to_curl(message: dict) -> str:
     if body:
         parts.extend(["--data-raw", shlex.quote(body)])
     return " ".join(parts)
+
+
+def message_to_stream_summary(message: dict) -> dict[str, object]:
+    content_type = str(message.get("content_type") or "").lower()
+    return {
+        "id": message["id"],
+        "bin_id": message["bin_id"],
+        "received_at": message["received_at"],
+        "method": message["method"],
+        "path": message["path"],
+        "query_string": message.get("query_string", ""),
+        "body_preview": message.get("body_preview", ""),
+        "has_json": bool(message.get("body_json") is not None or "json" in content_type),
+        "signature_status": message.get("signature_status"),
+    }
+
+
+def publish_stream_message(bin_id: str, message: dict) -> None:
+    subscribers = _STREAM_SUBSCRIBERS.get(bin_id)
+    if not subscribers:
+        return
+    event = {
+        "type": "new_message",
+        "latest_id": int(message["id"]),
+        "message": message_to_stream_summary(message),
+    }
+    for queue in tuple(subscribers):
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -315,7 +354,7 @@ def api_message_curl(message_id: int):
 
 @app.get("/api/bins/{bin_id}/export.ndjson", response_class=Response)
 def api_bin_export_ndjson(bin_id: str):
-    if not db.get_bin(bin_id):
+    if not db.bin_exists(bin_id):
         raise HTTPException(status_code=404, detail="Bin not found")
     before_id = None
     lines: list[str] = []
@@ -338,25 +377,37 @@ def api_bin_export_ndjson(bin_id: str):
 
 @app.get("/api/bins/{bin_id}/stream")
 async def stream_messages(bin_id: str, request: Request):
-    if not db.get_bin(bin_id):
+    if not db.bin_exists(bin_id):
         raise HTTPException(status_code=404, detail="Bin not found")
+    queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=256)
+    _STREAM_SUBSCRIBERS.setdefault(bin_id, set()).add(queue)
 
     async def event_gen():
         try:
             last_event_id = int(request.headers.get("last-event-id", "0") or "0")
         except ValueError:
             last_event_id = 0
-        while True:
-            if await request.is_disconnected():
-                break
-            latest_id = db.get_latest_message_id(bin_id)
-            if latest_id > last_event_id:
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                latest_id = int(event["latest_id"])
+                if latest_id <= last_event_id:
+                    continue
                 last_event_id = latest_id
-                payload = json.dumps({"type": "new_message", "latest_id": latest_id})
+                payload = json.dumps(event)
                 yield f"id: {latest_id}\nevent: message\ndata: {payload}\n\n"
-            else:
-                yield ": keepalive\n\n"
-            await asyncio.sleep(1.0)
+        finally:
+            subscribers = _STREAM_SUBSCRIBERS.get(bin_id)
+            if subscribers is not None:
+                subscribers.discard(queue)
+                if not subscribers:
+                    _STREAM_SUBSCRIBERS.pop(bin_id, None)
 
     return StreamingResponse(
         event_gen(),
@@ -371,8 +422,7 @@ async def stream_messages(bin_id: str, request: Request):
 
 @app.api_route("/hooks/{bin_id}", methods=["POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def ingest_hook(bin_id: str, request: Request):
-    bin_data = db.get_bin(bin_id)
-    if not bin_data:
+    if not db.bin_exists(bin_id):
         raise HTTPException(status_code=404, detail="Bin not found")
 
     content_length = request.headers.get("content-length")
@@ -405,6 +455,7 @@ async def ingest_hook(bin_id: str, request: Request):
         max_messages=RETENTION_MAX_MESSAGES if RETENTION_MAX_MESSAGES > 0 else None,
         retention_days=RETENTION_DAYS if RETENTION_DAYS > 0 else None,
     )
+    publish_stream_message(bin_id, message)
     LOGGER.info(
         json.dumps(
             {
@@ -460,15 +511,14 @@ def metrics():
 
 @app.post("/api/bins/{bin_id}/seed")
 async def seed_bin(bin_id: str):
-    bin_data = db.get_bin(bin_id)
-    if not bin_data:
+    if not db.bin_exists(bin_id):
         raise HTTPException(status_code=404, detail="Bin not found")
     sample = {
         "source": "webhook-bin",
         "event": "sample",
         "note": "Local test payload",
     }
-    db.store_message(
+    message = db.store_message(
         bin_id=bin_id,
         method="POST",
         path=f"/hooks/{bin_id}",
@@ -478,6 +528,7 @@ async def seed_bin(bin_id: str):
         headers={"content-type": "application/json"},
         body=json.dumps(sample).encode("utf-8"),
     )
+    publish_stream_message(bin_id, message)
     return RedirectResponse(url=f"/bins/{bin_id}", status_code=303)
 
 

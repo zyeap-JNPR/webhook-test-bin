@@ -61,6 +61,7 @@ def initialize() -> None:
                 headers_json TEXT NOT NULL,
                 body_text TEXT NOT NULL,
                 body_base64 TEXT NOT NULL,
+                body_size INTEGER,
                 signature_status TEXT,
                 signature_details TEXT
             );
@@ -86,6 +87,8 @@ def initialize() -> None:
             """
         )
         columns = {row[1] for row in conn.execute("PRAGMA table_info('webhook_messages')").fetchall()}
+        if "body_size" not in columns:
+            conn.execute("ALTER TABLE webhook_messages ADD COLUMN body_size INTEGER")
         if "signature_status" not in columns:
             conn.execute("ALTER TABLE webhook_messages ADD COLUMN signature_status TEXT")
         if "signature_details" not in columns:
@@ -149,6 +152,12 @@ def delete_bin(bin_id: str) -> bool:
     return cursor.rowcount > 0
 
 
+def bin_exists(bin_id: str) -> bool:
+    with connect() as conn:
+        row = conn.execute("SELECT 1 FROM bins WHERE id = ? LIMIT 1", (bin_id,)).fetchone()
+    return row is not None
+
+
 def touch_bin(bin_id: str) -> None:
     with connect() as conn:
         conn.execute(
@@ -171,15 +180,16 @@ def store_message(
 ) -> dict[str, Any]:
     body_text = body.decode("utf-8", errors="replace")
     body_base64 = base64.b64encode(body).decode("ascii")
+    body_size = len(body)
     now = utc_now()
     with connect() as conn:
         cursor = conn.execute(
             """
             INSERT INTO webhook_messages (
                 bin_id, received_at, method, path, query_string, remote_addr,
-                content_type, headers_json, body_text, body_base64,
+                content_type, headers_json, body_text, body_base64, body_size,
                 signature_status, signature_details
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 bin_id,
@@ -192,6 +202,7 @@ def store_message(
                 json.dumps(headers, sort_keys=True),
                 body_text,
                 body_base64,
+                body_size,
                 signature_status,
                 signature_details,
             ),
@@ -252,6 +263,7 @@ def list_messages(
             headers_json,
             body_text,
             body_base64,
+            body_size,
             signature_status,
             signature_details
         FROM webhook_messages
@@ -285,6 +297,7 @@ def get_message(message_id: int) -> dict[str, Any] | None:
                 headers_json,
                 body_text,
                 body_base64,
+                body_size,
                 signature_status,
                 signature_details
             FROM webhook_messages
@@ -358,6 +371,9 @@ def restore_database(source_path: str) -> None:
 def row_to_message(row: sqlite3.Row, include_body: bool, slim: bool = False) -> dict[str, Any]:
     body_text = row["body_text"]
     content_type = (row["content_type"] or "").lower()
+    body_size = row["body_size"]
+    if body_size is None:
+        body_size = len(base64.b64decode(row["body_base64"]))
 
     if slim:
         # Lightweight card representation: no headers, no body_json, short preview
@@ -368,7 +384,7 @@ def row_to_message(row: sqlite3.Row, include_body: bool, slim: bool = False) -> 
             "method": row["method"],
             "path": row["path"],
             "query_string": row["query_string"],
-            "body_size": len(base64.b64decode(row["body_base64"])),
+            "body_size": body_size,
             "body_preview": body_text[:120],
             "has_json": "json" in content_type,
             "signature_status": row["signature_status"],
@@ -391,7 +407,7 @@ def row_to_message(row: sqlite3.Row, include_body: bool, slim: bool = False) -> 
         "remote_addr": row["remote_addr"],
         "content_type": row["content_type"],
         "headers": headers,
-        "body_size": len(base64.b64decode(row["body_base64"])),
+        "body_size": body_size,
         "body_preview": body_text[:500],
         "signature_status": row["signature_status"],
         "signature_details": row["signature_details"],
