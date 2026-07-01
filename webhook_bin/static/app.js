@@ -15,6 +15,7 @@ function buildMessageQuery(params) {
   const query = new URLSearchParams();
   query.set("limit", String(params.limit || 100));
   if (params.beforeId) query.set("before_id", String(params.beforeId));
+  if (params.afterId) query.set("after_id", String(params.afterId));
   if (params.method) query.set("method", params.method);
   if (params.q) query.set("q", params.q);
   if (params.headerKey) query.set("header_key", params.headerKey);
@@ -67,6 +68,7 @@ let nextBeforeId = null;
 let currentFilters = { method: "", q: "", headerKey: "", headerValue: "" };
 let currentPageSize = Number(localStorage.getItem("ui-page-size") || "25");
 let knownTotalMessages = null;
+let maxKnownMessageId = 0;
 // message id (number) -> full detail object; never invalidated (messages are immutable)
 const messageDetailCache = new Map();
 // message id (number) -> slim list object; used for instant optimistic render
@@ -327,6 +329,7 @@ async function runRefreshMessages({ append = false } = {}) {
   // Cache slim list rows for instant optimistic detail render on click
   for (const msg of data.messages) {
     listMessageCache.set(msg.id, msg);
+    if (msg.id > maxKnownMessageId) maxKnownMessageId = msg.id;
   }
 
   const html = data.messages.map(messageCard).join("") || `<p class="muted">No messages yet.</p>`;
@@ -424,6 +427,7 @@ function appendMessageFromStream(streamMessage) {
   }
   if (container.querySelector(`[data-message-id="${id}"]`)) return;
   listMessageCache.set(id, streamMessage);
+  if (id > maxKnownMessageId) maxKnownMessageId = id;
 
   if (!container.querySelector(".message-item")) {
     container.innerHTML = "";
@@ -438,10 +442,38 @@ function appendMessageFromStream(streamMessage) {
 
 function scheduleStreamRefresh() {
   if (streamRefreshDebounceTimer) return;
+  if (document.hidden) return;
   streamRefreshDebounceTimer = setTimeout(() => {
     streamRefreshDebounceTimer = null;
     refreshMessages().catch(() => {});
   }, 300);
+}
+
+// On SSE reconnect: fetch only messages newer than last known ID to avoid
+// re-downloading the full page when nothing was missed.
+async function catchUpMessages(binId) {
+  if (maxKnownMessageId === 0) {
+    return refreshMessages();
+  }
+  const data = await loadMessages(binId, { afterId: maxKnownMessageId, limit: currentPageSize });
+  knownTotalMessages = data.bin?.message_count ?? knownTotalMessages;
+  if (data.messages.length === 0) return;
+  // If limit was hit there may be more; fall back to full refresh
+  if (data.messages.length >= currentPageSize) {
+    return refreshMessages();
+  }
+  const container = document.getElementById("messages");
+  if (!container) return;
+  for (const msg of data.messages) {
+    listMessageCache.set(msg.id, msg);
+    if (msg.id > maxKnownMessageId) maxKnownMessageId = msg.id;
+    if (container.querySelector(`[data-message-id="${msg.id}"]`)) continue;
+    container.insertAdjacentHTML("afterbegin", messageCard(msg));
+    const button = container.querySelector(`[data-message-id="${msg.id}"]`);
+    if (button) wireMessageButton(button);
+  }
+  renderTimestamps(container);
+  updateMessagesCount(container);
 }
 
 function setupLiveStream(binId) {
@@ -453,7 +485,7 @@ function setupLiveStream(binId) {
     statusEl.textContent = "Live: connected";
     statusEl.classList.add("live-ok");
     statusEl.classList.remove("live-fallback");
-    if (!document.hidden) refreshMessages().catch(() => {});
+    if (!document.hidden) catchUpMessages(binId).catch(() => {});
   };
   source.addEventListener("message", (event) => {
     if (document.hidden) return;
@@ -478,7 +510,7 @@ function setupLiveStream(binId) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  const MESSAGE_FALLBACK_POLL_INTERVAL_MS = 15000;
+  const MESSAGE_FALLBACK_POLL_INTERVAL_MS = 30000;
 
   const form = document.getElementById("create-bin-form");
   if (form) {
