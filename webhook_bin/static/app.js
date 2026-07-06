@@ -69,10 +69,15 @@ let currentFilters = { method: "", q: "", headerKey: "", headerValue: "" };
 let currentPageSize = Number(localStorage.getItem("ui-page-size") || "25");
 let knownTotalMessages = null;
 let maxKnownMessageId = 0;
+let lastMessagesRefreshAt = 0;
+let lastHomepageRefreshAt = 0;
+const VISIBILITY_REFRESH_MIN_INTERVAL_MS = 60000;
 // message id (number) -> full detail object; never invalidated (messages are immutable)
 const messageDetailCache = new Map();
 // message id (number) -> slim list object; used for instant optimistic render
 const listMessageCache = new Map();
+// message id (number) -> generated curl command
+const curlTextCache = new Map();
 let currentAbortController = null;
 let messagesPollTimer = null;
 let streamRefreshDebounceTimer = null;
@@ -353,6 +358,7 @@ async function runRefreshMessages({ append = false } = {}) {
   container.querySelectorAll(".message-item").forEach((button) => {
     wireMessageButton(button);
   });
+  lastMessagesRefreshAt = Date.now();
 
   const loadMoreBtn = document.getElementById("load-more-btn");
   if (loadMoreBtn) {
@@ -371,6 +377,23 @@ async function refreshMessages(options = {}) {
     });
   }
   return await refreshMessagesInFlight;
+}
+
+function shouldRefreshOnVisible(lastRefreshAt) {
+  return (Date.now() - lastRefreshAt) >= VISIBILITY_REFRESH_MIN_INTERVAL_MS;
+}
+
+function maybeRefreshMessagesOnVisible() {
+  if (document.hidden) return;
+  if (!shouldRefreshOnVisible(lastMessagesRefreshAt)) return;
+  refreshMessages().catch(() => {});
+}
+
+function refreshHomepage() {
+  return loadBins().then((bins) => {
+    renderHomepage(bins);
+    lastHomepageRefreshAt = Date.now();
+  });
 }
 
 async function confirmDeleteBin(binId) {
@@ -392,6 +415,9 @@ async function handleDeleteBin(button) {
   if (redirect) {
     window.location.href = redirect;
     return;
+  }
+  if (document.querySelector("[data-homepage-root]")) {
+    await refreshHomepage();
   }
   const homepage = document.querySelector("[data-homepage-root]");
   if (homepage) {
@@ -573,15 +599,16 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) refreshMessages().catch(() => {});
+      maybeRefreshMessagesOnVisible();
     });
   }
 
   const homepage = document.querySelector("[data-homepage-root]");
   if (homepage) {
-    loadBins().then(renderHomepage).catch(() => {});
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) loadBins().then(renderHomepage).catch(() => {});
+      if (document.hidden) return;
+      if (!shouldRefreshOnVisible(lastHomepageRefreshAt)) return;
+      refreshHomepage().catch(() => {});
     });
   }
 
@@ -632,11 +659,20 @@ document.addEventListener("DOMContentLoaded", () => {
     const curlButton = event.target.closest("[data-copy-curl]");
     if (curlButton) {
       event.preventDefault();
-      fetch(curlButton.dataset.copyCurl)
-        .then((res) => {
-          if (!res.ok) throw new Error("failed to load curl");
-          return res.text();
-        })
+      const messageId = Number(curlButton.dataset.copyCurl?.split("/").at(-2));
+      const cachedText = Number.isFinite(messageId) ? curlTextCache.get(messageId) : null;
+      const writeText = cachedText
+        ? Promise.resolve(cachedText)
+        : fetch(curlButton.dataset.copyCurl)
+          .then((res) => {
+            if (!res.ok) throw new Error("failed to load curl");
+            return res.text();
+          })
+          .then((text) => {
+            if (Number.isFinite(messageId)) curlTextCache.set(messageId, text);
+            return text;
+          });
+      writeText
         .then((text) => navigator.clipboard.writeText(text))
         .then(() => showToast("cURL copied"))
         .catch((error) => showToast(error.message, "error"));
