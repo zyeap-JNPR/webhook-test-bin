@@ -24,13 +24,20 @@ def test_favicon_and_robots_routes(client):
     favicon_svg = client.get("/favicon.svg")
     assert favicon_svg.status_code == 200
     assert "image/svg+xml" in favicon_svg.headers["content-type"]
+    assert "max-age=86400" in favicon_svg.headers["cache-control"]
 
     favicon_ico = client.get("/favicon.ico")
     assert favicon_ico.status_code == 204
+    assert "max-age=86400" in favicon_ico.headers["cache-control"]
 
     robots = client.get("/robots.txt")
     assert robots.status_code == 200
     assert "User-agent: *" in robots.text
+    assert "Disallow: /" in robots.text
+
+    static_asset = client.get("/static/app.js?v=test")
+    assert static_asset.status_code == 200
+    assert static_asset.headers["cache-control"] == "public, max-age=31536000, immutable"
 
 
 def test_create_bin_defaults_and_invalid_json(client):
@@ -381,6 +388,44 @@ def test_stream_endpoint(client):
     response = asyncio.run(main.stream_messages("stream01", FakeRequest()))
     assert response.status_code == 200
     assert response.media_type == "text/event-stream"
+
+
+def test_stream_replays_messages_after_cursor(client):
+    db.create_bin("stream02", "stream")
+    first = db.store_message(
+        bin_id="stream02",
+        method="POST",
+        path="/hooks/stream02",
+        query_string="",
+        remote_addr=None,
+        content_type="text/plain",
+        headers={},
+        body=b"first",
+    )
+    second = db.store_message(
+        bin_id="stream02",
+        method="POST",
+        path="/hooks/stream02",
+        query_string="",
+        remote_addr=None,
+        content_type="text/plain",
+        headers={},
+        body=b"second",
+    )
+
+    class FakeRequest:
+        headers = {}
+
+        async def is_disconnected(self):
+            return True
+
+    async def read_first_event():
+        response = await main.stream_messages("stream02", FakeRequest(), after_id=first["id"])
+        return await anext(response.body_iterator)
+
+    event = asyncio.run(read_first_event())
+    assert f"id: {second['id']}" in event
+    assert '"body_preview": "second"' in event
 
 
 def test_public_base_url_prefers_env(client, monkeypatch: pytest.MonkeyPatch):

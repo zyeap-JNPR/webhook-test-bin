@@ -149,6 +149,28 @@ def test_list_messages_limit_and_preview(temp_db: Path):
     assert next_before_id is not None
 
 
+def test_list_messages_after_returns_ascending_summaries(temp_db: Path):
+    db.create_bin("stream", "stream")
+    message_ids = []
+    for i in range(3):
+        message = db.store_message(
+            bin_id="stream",
+            method="POST",
+            path="/hooks/stream",
+            query_string="",
+            remote_addr=None,
+            content_type="text/plain",
+            headers={},
+            body=f"msg-{i}".encode(),
+        )
+        message_ids.append(message["id"])
+
+    rows = db.list_messages_after("stream", after_id=message_ids[0], limit=10)
+
+    assert [row["id"] for row in rows] == message_ids[1:]
+    assert all("body_text" not in row for row in rows)
+
+
 def test_touch_bin_updates_updated_at(temp_db: Path):
     db.create_bin("b4", "bin")
     before = db.get_bin("b4")

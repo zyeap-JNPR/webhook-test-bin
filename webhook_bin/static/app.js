@@ -72,6 +72,7 @@ let maxKnownMessageId = 0;
 let lastMessagesRefreshAt = 0;
 let lastHomepageRefreshAt = 0;
 const VISIBILITY_REFRESH_MIN_INTERVAL_MS = 60000;
+const MESSAGE_FALLBACK_POLL_INTERVAL_MS = 300000;
 // message id (number) -> full detail object; never invalidated (messages are immutable)
 const messageDetailCache = new Map();
 // message id (number) -> slim list object; used for instant optimistic render
@@ -81,7 +82,9 @@ const curlTextCache = new Map();
 let currentAbortController = null;
 let messagesPollTimer = null;
 let streamRefreshDebounceTimer = null;
+let streamRefreshPending = false;
 let refreshMessagesInFlight = null;
+let liveStreamConnected = false;
 
 function formatTimestamp(value) {
   if (!value) return "—";
@@ -385,6 +388,12 @@ function shouldRefreshOnVisible(lastRefreshAt) {
 
 function maybeRefreshMessagesOnVisible() {
   if (document.hidden) return;
+  if (streamRefreshPending) {
+    streamRefreshPending = false;
+    refreshMessages().catch(() => {});
+    return;
+  }
+  if (liveStreamConnected) return;
   if (!shouldRefreshOnVisible(lastMessagesRefreshAt)) return;
   refreshMessages().catch(() => {});
 }
@@ -418,11 +427,6 @@ async function handleDeleteBin(button) {
   }
   if (document.querySelector("[data-homepage-root]")) {
     await refreshHomepage();
-  }
-  const homepage = document.querySelector("[data-homepage-root]");
-  if (homepage) {
-    const bins = await loadBins();
-    renderHomepage(bins);
   }
 }
 
@@ -468,53 +472,29 @@ function appendMessageFromStream(streamMessage) {
 
 function scheduleStreamRefresh() {
   if (streamRefreshDebounceTimer) return;
-  if (document.hidden) return;
+  if (document.hidden) {
+    streamRefreshPending = true;
+    return;
+  }
   streamRefreshDebounceTimer = setTimeout(() => {
     streamRefreshDebounceTimer = null;
+    streamRefreshPending = false;
     refreshMessages().catch(() => {});
   }, 300);
 }
 
-// On SSE reconnect: fetch only messages newer than last known ID to avoid
-// re-downloading the full page when nothing was missed.
-async function catchUpMessages(binId) {
-  if (maxKnownMessageId === 0) {
-    return refreshMessages();
-  }
-  const data = await loadMessages(binId, { afterId: maxKnownMessageId, limit: currentPageSize });
-  knownTotalMessages = data.bin?.message_count ?? knownTotalMessages;
-  if (data.messages.length === 0) return;
-  // If limit was hit there may be more; fall back to full refresh
-  if (data.messages.length >= currentPageSize) {
-    return refreshMessages();
-  }
-  const container = document.getElementById("messages");
-  if (!container) return;
-  for (const msg of data.messages) {
-    listMessageCache.set(msg.id, msg);
-    if (msg.id > maxKnownMessageId) maxKnownMessageId = msg.id;
-    if (container.querySelector(`[data-message-id="${msg.id}"]`)) continue;
-    container.insertAdjacentHTML("afterbegin", messageCard(msg));
-    const button = container.querySelector(`[data-message-id="${msg.id}"]`);
-    if (button) wireMessageButton(button);
-  }
-  renderTimestamps(container);
-  updateMessagesCount(container);
-}
-
-function setupLiveStream(binId) {
+function setupLiveStream(binId, afterId = 0) {
   const statusEl = document.getElementById("live-status");
   if (!window.EventSource || !statusEl) return false;
-  const source = new EventSource(`/api/bins/${binId}/stream`);
+  const source = new EventSource(`/api/bins/${binId}/stream?after_id=${afterId}`);
   source.onopen = () => {
+    liveStreamConnected = true;
     stopMessagesPolling();
     statusEl.textContent = "Live: connected";
     statusEl.classList.add("live-ok");
     statusEl.classList.remove("live-fallback");
-    if (!document.hidden) catchUpMessages(binId).catch(() => {});
   };
   source.addEventListener("message", (event) => {
-    if (document.hidden) return;
     try {
       const payload = JSON.parse(event.data || "{}");
       if (payload?.message) {
@@ -527,17 +507,17 @@ function setupLiveStream(binId) {
     }
   });
   source.onerror = () => {
+    liveStreamConnected = false;
+    source.close();
     statusEl.textContent = "Live: fallback polling";
     statusEl.classList.remove("live-ok");
     statusEl.classList.add("live-fallback");
-    if (!messagesPollTimer) startMessagesPolling(15000);
+    if (!messagesPollTimer) startMessagesPolling(MESSAGE_FALLBACK_POLL_INTERVAL_MS);
   };
   return true;
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  const MESSAGE_FALLBACK_POLL_INTERVAL_MS = 30000;
-
   const form = document.getElementById("create-bin-form");
   if (form) {
     form.addEventListener("submit", (event) => {
@@ -549,11 +529,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const messages = document.getElementById("messages");
   if (messages) {
     const binId = messages.dataset.binId;
-    refreshMessages().catch((error) => {
+    refreshMessages().then(() => {
+      const hasLiveStream = setupLiveStream(binId, maxKnownMessageId);
+      if (!hasLiveStream) startMessagesPolling(MESSAGE_FALLBACK_POLL_INTERVAL_MS);
+    }).catch((error) => {
       messages.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
+      startMessagesPolling(MESSAGE_FALLBACK_POLL_INTERVAL_MS);
     });
-    const hasLiveStream = setupLiveStream(binId);
-    if (!hasLiveStream) startMessagesPolling(MESSAGE_FALLBACK_POLL_INTERVAL_MS);
     document.getElementById("refresh-btn")?.addEventListener("click", () => {
       refreshMessages().catch((error) => showToast(error.message, "error"));
     });
@@ -605,6 +587,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const homepage = document.querySelector("[data-homepage-root]");
   if (homepage) {
+    lastHomepageRefreshAt = Date.now();
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) return;
       if (!shouldRefreshOnVisible(lastHomepageRefreshAt)) return;

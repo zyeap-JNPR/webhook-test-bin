@@ -312,6 +312,32 @@ def get_message(message_id: int) -> dict[str, Any] | None:
     return row_to_message(row, include_body=True) if row else None
 
 
+def list_messages_after(bin_id: str, after_id: int, limit: int = 500) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                bin_id,
+                received_at,
+                method,
+                path,
+                query_string,
+                content_type,
+                body_text,
+                body_base64,
+                body_size,
+                signature_status
+            FROM webhook_messages
+            WHERE bin_id = ? AND id > ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (bin_id, after_id, limit),
+        ).fetchall()
+    return [row_to_message(row, include_body=False, slim=True) for row in rows]
+
+
 def get_latest_message_id(bin_id: str) -> int:
     with connect() as conn:
         row = conn.execute(

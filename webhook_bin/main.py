@@ -34,6 +34,14 @@ if not LOGGER.handlers:
 _STREAM_SUBSCRIBERS: dict[str, set[asyncio.Queue[dict[str, object]]]] = {}
 
 
+class CacheControlledStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: dict):
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            response.headers["cache-control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 def _static_hash() -> str:
     """Short hash of static assets for cache-busting."""
     h = hashlib.md5()
@@ -55,7 +63,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Webhook Bin", version="0.1.0", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+app.mount("/static", CacheControlledStaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 # Paths to skip visitor logging (noise: health checks, assets, API polling, ingest)
 _VISITOR_LOG_SKIP_PREFIXES = ("/static/", "/healthz", "/metrics", "/favicon", "/api/", "/hooks/")
@@ -212,17 +220,25 @@ def index(request: Request):
 
 @app.get("/favicon.svg")
 def favicon_svg():
-    return Response(content=FAVICON_SVG, media_type="image/svg+xml")
+    return Response(
+        content=FAVICON_SVG,
+        media_type="image/svg+xml",
+        headers={"cache-control": "public, max-age=86400"},
+    )
 
 
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon_ico():
-    return Response(status_code=204)
+    return Response(status_code=204, headers={"cache-control": "public, max-age=86400"})
 
 
 @app.get("/robots.txt", include_in_schema=False)
 def robots_txt():
-    return Response(content="User-agent: *\nDisallow:\n", media_type="text/plain")
+    return Response(
+        content="User-agent: *\nDisallow: /\n",
+        media_type="text/plain",
+        headers={"cache-control": "public, max-age=86400"},
+    )
 
 
 @app.post("/api/bins")
@@ -378,7 +394,7 @@ def api_bin_export_ndjson(bin_id: str):
 
 
 @app.get("/api/bins/{bin_id}/stream")
-async def stream_messages(bin_id: str, request: Request):
+async def stream_messages(bin_id: str, request: Request, after_id: int = 0):
     if not db.bin_exists(bin_id):
         raise HTTPException(status_code=404, detail="Bin not found")
     queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=256)
@@ -386,10 +402,24 @@ async def stream_messages(bin_id: str, request: Request):
 
     async def event_gen():
         try:
-            last_event_id = int(request.headers.get("last-event-id", "0") or "0")
+            header_event_id = int(request.headers.get("last-event-id", "0") or "0")
         except ValueError:
-            last_event_id = 0
+            header_event_id = 0
+        last_event_id = max(0, after_id, header_event_id)
         try:
+            while True:
+                missed_messages = db.list_messages_after(bin_id, after_id=last_event_id, limit=500)
+                if not missed_messages:
+                    break
+                for message in missed_messages:
+                    latest_id = int(message["id"])
+                    last_event_id = latest_id
+                    event = {
+                        "type": "new_message",
+                        "latest_id": latest_id,
+                        "message": message,
+                    }
+                    yield f"id: {latest_id}\nevent: message\ndata: {json.dumps(event)}\n\n"
             while True:
                 if await request.is_disconnected():
                     break
