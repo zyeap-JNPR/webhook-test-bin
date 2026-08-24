@@ -266,9 +266,23 @@ async def create_bin(request: Request):
     )
 
 
+def _etag_for(basis: str) -> str:
+    return 'W/"' + hashlib.md5(basis.encode("utf-8")).hexdigest() + '"'
+
+
+def _bins_list_etag(bins: list[dict]) -> str:
+    basis = "|".join(f"{b['id']}:{b['message_count']}:{b['last_message_at']}" for b in bins)
+    return _etag_for(basis)
+
+
 @app.get("/api/bins")
-def api_bins():
-    return {"bins": db.list_bins()}
+def api_bins(request: Request):
+    bins = db.list_bins()
+    etag = _bins_list_etag(bins)
+    headers = {"etag": etag, "cache-control": "no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return JSONResponse({"bins": bins}, headers=headers)
 
 
 @app.get("/api/bins/{bin_id}")
@@ -293,17 +307,31 @@ def delete_bin_redirect(bin_id: str):
     return RedirectResponse(url="/", status_code=303)
 
 
+DASHBOARD_BOOTSTRAP_LIMIT = 25
+
+
 @app.get("/bins/{bin_id}", response_class=HTMLResponse)
 def bin_dashboard(request: Request, bin_id: str):
     bin_data = db.get_bin(bin_id)
     if not bin_data:
         raise HTTPException(status_code=404, detail="Bin not found")
+    messages, next_before_id = db.list_messages(bin_id, limit=DASHBOARD_BOOTSTRAP_LIMIT)
+    bootstrap = {
+        "bin": bin_data,
+        "messages": messages,
+        "next_before_id": next_before_id,
+    }
+    # Escape "<" so the JSON payload can't break out of the inline <script> tag
+    # (e.g. via a stored message body containing "</script>").
+    bootstrap_json = json.dumps(bootstrap, default=str).replace("<", "\\u003c")
     return TEMPLATES.TemplateResponse(
         request=request,
         name="bin.html",
         context={
             "bin": bin_data,
             "base_url": public_base_url(request),
+            "bootstrap_messages_json": bootstrap_json,
+            "bootstrap_page_size": DASHBOARD_BOOTSTRAP_LIMIT,
         },
     )
 
@@ -311,6 +339,7 @@ def bin_dashboard(request: Request, bin_id: str):
 @app.get("/api/bins/{bin_id}/messages")
 def api_messages(
     bin_id: str,
+    request: Request,
     limit: int = 100,
     before_id: int | None = None,
     after_id: int | None = None,
@@ -324,6 +353,13 @@ def api_messages(
     bin_data = db.get_bin(bin_id)
     if not bin_data:
         raise HTTPException(status_code=404, detail="Bin not found")
+    etag = _etag_for(
+        f"{bin_id}:{bin_data['message_count']}:{bin_data['last_message_at']}:"
+        f"{limit}:{before_id}:{after_id}:{method}:{q}:{header_key}:{header_value}:{since}:{until}"
+    )
+    headers = {"etag": etag, "cache-control": "no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
     messages, next_before_id = db.list_messages(
         bin_id,
         limit=max(1, min(limit, 500)),
@@ -336,11 +372,14 @@ def api_messages(
         since=since,
         until=until,
     )
-    return {
-        "bin": bin_data,
-        "messages": messages,
-        "next_before_id": next_before_id,
-    }
+    return JSONResponse(
+        {
+            "bin": bin_data,
+            "messages": messages,
+            "next_before_id": next_before_id,
+        },
+        headers=headers,
+    )
 
 
 @app.get("/api/messages/{message_id}")

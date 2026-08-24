@@ -72,7 +72,9 @@ let maxKnownMessageId = 0;
 let lastMessagesRefreshAt = 0;
 let lastHomepageRefreshAt = 0;
 const VISIBILITY_REFRESH_MIN_INTERVAL_MS = 60000;
-const MESSAGE_FALLBACK_POLL_INTERVAL_MS = 300000;
+const MESSAGE_FALLBACK_POLL_MIN_MS = 300000;
+const MESSAGE_FALLBACK_POLL_MAX_MS = 900000;
+let fallbackPollIntervalMs = MESSAGE_FALLBACK_POLL_MIN_MS;
 // message id (number) -> full detail object; never invalidated (messages are immutable)
 const messageDetailCache = new Map();
 // message id (number) -> slim list object; used for instant optimistic render
@@ -86,10 +88,34 @@ let streamRefreshPending = false;
 let refreshMessagesInFlight = null;
 let liveStreamConnected = false;
 
+const RELATIVE_TIME_FORMATTER = typeof Intl.RelativeTimeFormat !== "undefined"
+  ? new Intl.RelativeTimeFormat("en", { numeric: "auto" })
+  : null;
+
+function formatRelativeTime(date) {
+  if (!RELATIVE_TIME_FORMATTER) return date.toISOString().slice(0, 23);
+  const diffSec = Math.round((Date.now() - date.getTime()) / 1000);
+  const units = [
+    ["year", 31536000],
+    ["month", 2592000],
+    ["day", 86400],
+    ["hour", 3600],
+    ["minute", 60],
+    ["second", 1],
+  ];
+  for (const [unit, secondsInUnit] of units) {
+    if (Math.abs(diffSec) >= secondsInUnit || unit === "second") {
+      return RELATIVE_TIME_FORMATTER.format(-Math.round(diffSec / secondsInUnit), unit);
+    }
+  }
+  return RELATIVE_TIME_FORMATTER.format(0, "second");
+}
+
 function formatTimestamp(value) {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
+  if (uiTimezone === "rel") return formatRelativeTime(date);
   if (uiTimezone === "utc") return date.toISOString().slice(0, 23);
   const parts = new Intl.DateTimeFormat("sv-SE", {
     timeZone: "America/Los_Angeles",
@@ -113,6 +139,23 @@ function renderTimestamps(root = document) {
   root.querySelectorAll("[data-timezone]").forEach((button) => {
     button.classList.toggle("active", button.dataset.timezone === uiTimezone);
   });
+}
+
+// Briefly swaps a copy button's label to a checkmark as extra confirmation
+// alongside the toast (useful when the toast has already scrolled by).
+function flashCopied(button, label = "Copied") {
+  if (!button) return;
+  if (button.dataset.copyOriginalLabel === undefined) {
+    button.dataset.copyOriginalLabel = button.textContent;
+  }
+  button.textContent = `✓ ${label}`;
+  button.classList.add("copied");
+  clearTimeout(Number(button.dataset.copyFlashTimer) || undefined);
+  const timer = setTimeout(() => {
+    button.textContent = button.dataset.copyOriginalLabel;
+    button.classList.remove("copied");
+  }, 1500);
+  button.dataset.copyFlashTimer = String(timer);
 }
 
 function escapeHtml(value) {
@@ -331,6 +374,12 @@ async function runRefreshMessages({ append = false } = {}) {
     beforeId: append ? nextBeforeId : null,
     ...currentFilters,
   });
+  applyMessagesResponse(data, { append });
+}
+
+function applyMessagesResponse(data, { append = false } = {}) {
+  const container = document.getElementById("messages");
+  if (!container) return;
   nextBeforeId = data.next_before_id;
   knownTotalMessages = data.bin?.message_count ?? null;
 
@@ -394,6 +443,11 @@ function maybeRefreshMessagesOnVisible() {
     return;
   }
   if (liveStreamConnected) return;
+  // Coming back to a backed-off fallback poll: reset to baseline so the tab
+  // catches up promptly instead of waiting out a stale long interval.
+  if (messagesPollTimer && fallbackPollIntervalMs > MESSAGE_FALLBACK_POLL_MIN_MS) {
+    startMessagesPolling(MESSAGE_FALLBACK_POLL_MIN_MS);
+  }
   if (!shouldRefreshOnVisible(lastMessagesRefreshAt)) return;
   refreshMessages().catch(() => {});
 }
@@ -437,13 +491,21 @@ function stopMessagesPolling() {
   }
 }
 
-function startMessagesPolling(intervalMs) {
+function startMessagesPolling(initialIntervalMs = MESSAGE_FALLBACK_POLL_MIN_MS) {
   stopMessagesPolling();
+  fallbackPollIntervalMs = initialIntervalMs;
   const tick = async () => {
-    if (!document.hidden) await refreshMessages().catch(() => {});
-    messagesPollTimer = setTimeout(tick, intervalMs);
+    if (!document.hidden) {
+      const beforeMaxId = maxKnownMessageId;
+      await refreshMessages().catch(() => {});
+      // Back off further on quiet bins, reset to baseline as soon as new data shows up.
+      fallbackPollIntervalMs = maxKnownMessageId > beforeMaxId
+        ? MESSAGE_FALLBACK_POLL_MIN_MS
+        : Math.min(Math.round(fallbackPollIntervalMs * 1.5), MESSAGE_FALLBACK_POLL_MAX_MS);
+    }
+    messagesPollTimer = setTimeout(tick, fallbackPollIntervalMs);
   };
-  messagesPollTimer = setTimeout(tick, intervalMs);
+  messagesPollTimer = setTimeout(tick, fallbackPollIntervalMs);
 }
 
 function appendMessageFromStream(streamMessage) {
@@ -464,7 +526,11 @@ function appendMessageFromStream(streamMessage) {
   }
   container.insertAdjacentHTML("afterbegin", messageCard(streamMessage));
   const button = container.querySelector(`[data-message-id="${id}"]`);
-  if (button) wireMessageButton(button);
+  if (button) {
+    wireMessageButton(button);
+    button.classList.add("new-pulse");
+    button.addEventListener("animationend", () => button.classList.remove("new-pulse"), { once: true });
+  }
   renderTimestamps(container);
   if (knownTotalMessages != null) knownTotalMessages += 1;
   updateMessagesCount(container);
@@ -483,7 +549,7 @@ function scheduleStreamRefresh() {
   }, 300);
 }
 
-function setupLiveStream(binId, afterId = 0) {
+function setupLiveStream(binId, afterId = 0, onEvent = null) {
   const statusEl = document.getElementById("live-status");
   if (!window.EventSource || !statusEl) return false;
   const source = new EventSource(`/api/bins/${binId}/stream?after_id=${afterId}`);
@@ -493,12 +559,14 @@ function setupLiveStream(binId, afterId = 0) {
     statusEl.textContent = "Live: connected";
     statusEl.classList.add("live-ok");
     statusEl.classList.remove("live-fallback");
+    onEvent?.({ type: "status", connected: true });
   };
   source.addEventListener("message", (event) => {
     try {
       const payload = JSON.parse(event.data || "{}");
       if (payload?.message) {
         appendMessageFromStream(payload.message);
+        onEvent?.({ type: "new_message", message: payload.message });
       } else {
         scheduleStreamRefresh();
       }
@@ -512,9 +580,77 @@ function setupLiveStream(binId, afterId = 0) {
     statusEl.textContent = "Live: fallback polling";
     statusEl.classList.remove("live-ok");
     statusEl.classList.add("live-fallback");
-    if (!messagesPollTimer) startMessagesPolling(MESSAGE_FALLBACK_POLL_INTERVAL_MS);
+    onEvent?.({ type: "status", connected: false });
+    if (!messagesPollTimer) startMessagesPolling(MESSAGE_FALLBACK_POLL_MIN_MS);
   };
   return true;
+}
+
+// Coordinates SSE across multiple tabs open on the same bin: only one tab (the
+// "leader", chosen via the Web Locks API) holds a real EventSource connection;
+// other tabs relay off a BroadcastChannel. This avoids N idle tunnel/tab
+// connections for the same bin. Falls back to a plain per-tab connection when
+// either API is unavailable. Note: a follower tab that starts listening after
+// messages have already been relayed past it can miss those messages until its
+// next manual refresh — an acceptable tradeoff for the common single-tab case.
+function startLiveUpdates(binId, afterId = 0) {
+  const statusEl = document.getElementById("live-status");
+  if (!window.EventSource || !statusEl) {
+    startMessagesPolling(MESSAGE_FALLBACK_POLL_MIN_MS);
+    return;
+  }
+  if (typeof BroadcastChannel === "undefined" || !("locks" in navigator)) {
+    if (!setupLiveStream(binId, afterId)) startMessagesPolling(MESSAGE_FALLBACK_POLL_MIN_MS);
+    return;
+  }
+
+  const channel = new BroadcastChannel(`webhook-bin-stream-${binId}`);
+  let isLeader = false;
+  channel.onmessage = (event) => {
+    const payload = event.data;
+    if (payload?.type === "hello") {
+      // A newly-joined tab is asking for current status; only the leader answers.
+      if (isLeader) channel.postMessage({ type: "status", connected: liveStreamConnected });
+      return;
+    }
+    if (isLeader) return; // leader already applied this event locally
+    if (payload?.type === "new_message" && payload.message) {
+      appendMessageFromStream(payload.message);
+    } else if (payload?.type === "status") {
+      liveStreamConnected = Boolean(payload.connected);
+      stopMessagesPolling();
+      statusEl.textContent = payload.connected ? "Live: connected" : "Live: fallback polling";
+      statusEl.classList.toggle("live-ok", payload.connected);
+      statusEl.classList.toggle("live-fallback", !payload.connected);
+    }
+  };
+  statusEl.textContent = "Live: connecting…";
+  // Ask any existing leader tab for its current status (covers the case where
+  // this tab joins after the leader's initial connection already happened).
+  channel.postMessage({ type: "hello" });
+
+  navigator.locks.request(`webhook-bin-stream-lock-${binId}`, { mode: "exclusive" }, () => {
+    isLeader = true;
+    const hasStream = setupLiveStream(binId, maxKnownMessageId, (event) => channel.postMessage(event));
+    if (!hasStream) startMessagesPolling(MESSAGE_FALLBACK_POLL_MIN_MS);
+    return new Promise(() => {}); // hold the lock (and connection) until this tab unloads
+  }).catch(() => {});
+}
+
+function readBootstrapMessages(container) {
+  const el = document.getElementById("bootstrap-messages");
+  if (!el) return null;
+  el.remove(); // one-time use, avoid stale re-reads on later refresh calls
+  if (hasActiveFilters()) return null;
+  const bootstrapSize = Number(container.dataset.bootstrapPageSize || "0");
+  if (!bootstrapSize || currentPageSize !== bootstrapSize) return null;
+  try {
+    const data = JSON.parse(el.textContent || "null");
+    if (!data || !data.bin || data.bin.id !== container.dataset.binId) return null;
+    return data;
+  } catch {
+    return null;
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -529,12 +665,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const messages = document.getElementById("messages");
   if (messages) {
     const binId = messages.dataset.binId;
-    refreshMessages().then(() => {
-      const hasLiveStream = setupLiveStream(binId, maxKnownMessageId);
-      if (!hasLiveStream) startMessagesPolling(MESSAGE_FALLBACK_POLL_INTERVAL_MS);
+    const bootstrap = readBootstrapMessages(messages);
+    const initial = bootstrap ? Promise.resolve(applyMessagesResponse(bootstrap)) : refreshMessages();
+    initial.then(() => {
+      startLiveUpdates(binId, maxKnownMessageId);
     }).catch((error) => {
       messages.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
-      startMessagesPolling(MESSAGE_FALLBACK_POLL_INTERVAL_MS);
+      startMessagesPolling(MESSAGE_FALLBACK_POLL_MIN_MS);
     });
     document.getElementById("refresh-btn")?.addEventListener("click", () => {
       refreshMessages().catch((error) => showToast(error.message, "error"));
@@ -583,6 +720,33 @@ document.addEventListener("DOMContentLoaded", () => {
     document.addEventListener("visibilitychange", () => {
       maybeRefreshMessagesOnVisible();
     });
+    document.addEventListener("keydown", (event) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target;
+      const isTyping = target instanceof HTMLElement
+        && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (event.key === "/" && !isTyping) {
+        event.preventDefault();
+        document.querySelector('#message-filter-form input[name="q"]')?.focus();
+        return;
+      }
+      if (isTyping) return;
+      if (event.key === "r") {
+        refreshMessages().catch((error) => showToast(error.message, "error"));
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        const items = Array.from(messages.querySelectorAll(".message-item"));
+        if (!items.length) return;
+        event.preventDefault();
+        const activeIndex = items.findIndex((el) => el.classList.contains("active"));
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        const nextIndex = activeIndex === -1 ? 0 : Math.min(Math.max(activeIndex + step, 0), items.length - 1);
+        const nextItem = items[nextIndex];
+        nextItem?.click();
+        nextItem?.scrollIntoView({ block: "nearest" });
+      }
+    });
   }
 
   const homepage = document.querySelector("[data-homepage-root]");
@@ -605,6 +769,10 @@ document.addEventListener("DOMContentLoaded", () => {
         renderTimestamps(document);
       });
     });
+    // Keep "time ago" labels fresh while the tab is visible in relative mode.
+    setInterval(() => {
+      if (uiTimezone === "rel" && !document.hidden) renderTimestamps(document);
+    }, 30000);
   }
 
   document.querySelectorAll("[data-copy-target]").forEach((button) => {
@@ -614,6 +782,7 @@ document.addEventListener("DOMContentLoaded", () => {
       try {
         await navigator.clipboard.writeText(target.textContent || "");
         showToast("Copied");
+        flashCopied(button);
       } catch {
         showToast("Copy failed", "error");
       }
@@ -626,7 +795,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (copyTextBtn && !copyTextBtn.closest("[data-delete-bin]")) {
       event.preventDefault();
       navigator.clipboard.writeText(copyTextBtn.dataset.copyText || "")
-        .then(() => showToast("Copied"))
+        .then(() => {
+          showToast("Copied");
+          flashCopied(copyTextBtn);
+        })
         .catch(() => showToast("Copy failed", "error"));
       return;
     }
@@ -657,7 +829,10 @@ document.addEventListener("DOMContentLoaded", () => {
           });
       writeText
         .then((text) => navigator.clipboard.writeText(text))
-        .then(() => showToast("cURL copied"))
+        .then(() => {
+          showToast("cURL copied");
+          flashCopied(curlButton, "cURL copied");
+        })
         .catch((error) => showToast(error.message, "error"));
     }
   });

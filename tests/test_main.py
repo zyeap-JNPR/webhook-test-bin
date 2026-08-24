@@ -113,6 +113,65 @@ def test_bin_dashboard_and_messages_not_found(client):
     assert ok_dash.status_code == 200
 
 
+def test_bin_dashboard_embeds_bootstrap_messages(client):
+    create = client.post("/api/bins", json={"name": "bootstrap"})
+    bin_id = create.json()["bin"]["id"]
+    client.post(f"/hooks/{bin_id}", json={"event": "one"})
+    client.post(f"/hooks/{bin_id}", json={"event": "two"})
+
+    dash = client.get(f"/bins/{bin_id}")
+    assert dash.status_code == 200
+    assert 'id="bootstrap-messages"' in dash.text
+    marker = 'id="bootstrap-messages">'
+    start = dash.text.index(marker) + len(marker)
+    end = dash.text.index("</script>", start)
+    bootstrap = json.loads(dash.text[start:end])
+    assert bootstrap["bin"]["id"] == bin_id
+    assert len(bootstrap["messages"]) == 2
+    assert f'data-bootstrap-page-size="{main.DASHBOARD_BOOTSTRAP_LIMIT}"' in dash.text
+
+
+def test_bin_dashboard_bootstrap_escapes_script_breakout(client):
+    create = client.post("/api/bins", json={"name": "xss-check"})
+    bin_id = create.json()["bin"]["id"]
+    client.post(f"/hooks/{bin_id}", json={"evil": "</script><script>alert(1)</script>"})
+
+    dash = client.get(f"/bins/{bin_id}")
+    assert dash.status_code == 200
+    assert "</script><script>alert(1)" not in dash.text
+    assert "\\u003c/script>" in dash.text
+
+
+def test_api_bins_supports_conditional_get(client):
+    client.post("/api/bins", json={"name": "etag-check"})
+    first = client.get("/api/bins")
+    assert first.status_code == 200
+    etag = first.headers["etag"]
+    assert etag
+
+    cached = client.get("/api/bins", headers={"if-none-match": etag})
+    assert cached.status_code == 304
+    assert cached.headers["etag"] == etag
+
+
+def test_api_messages_supports_conditional_get(client):
+    create = client.post("/api/bins", json={"name": "etag-messages"})
+    bin_id = create.json()["bin"]["id"]
+    client.post(f"/hooks/{bin_id}", json={"event": "one"})
+
+    first = client.get(f"/api/bins/{bin_id}/messages")
+    assert first.status_code == 200
+    etag = first.headers["etag"]
+
+    cached = client.get(f"/api/bins/{bin_id}/messages", headers={"if-none-match": etag})
+    assert cached.status_code == 304
+
+    client.post(f"/hooks/{bin_id}", json={"event": "two"})
+    changed = client.get(f"/api/bins/{bin_id}/messages", headers={"if-none-match": etag})
+    assert changed.status_code == 200
+    assert changed.headers["etag"] != etag
+
+
 def test_ingest_hook_and_message_retrieval(client):
     create = client.post("/api/bins", json={"name": "ingest"})
     bin_id = create.json()["bin"]["id"]
