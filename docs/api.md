@@ -11,7 +11,6 @@ Base URL is your local or public host. Examples below use
 | GET | `/bins/{bin_id}` | Bin dashboard |
 | POST | `/api/bins` | Create bin |
 | GET | `/api/bins` | List bins |
-| GET | `/api/bins/{bin_id}` | Bin detail |
 | DELETE | `/api/bins/{bin_id}` | Delete bin + messages |
 | POST | `/delete/{bin_id}` | Delete bin + redirect home |
 | POST/PUT/PATCH/DELETE/OPTIONS | `/hooks/{bin_id}` | Store webhook |

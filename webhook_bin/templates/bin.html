@@ -8,9 +8,6 @@
     </div>
     <div class="toolbar">
       <a class="ghost" href="/">Back</a>
-      <form method="post" action="/api/bins/{{ bin.id }}/seed" data-debug-only>
-        <button type="submit">Seed sample</button>
-      </form>
       <button type="button" class="danger" data-delete-bin="{{ bin.id }}" data-delete-redirect="/">Delete bin</button>
     </div>
   </div>

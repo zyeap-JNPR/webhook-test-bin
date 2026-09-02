@@ -26,10 +26,6 @@ def test_favicon_and_robots_routes(client):
     assert "image/svg+xml" in favicon_svg.headers["content-type"]
     assert "max-age=86400" in favicon_svg.headers["cache-control"]
 
-    favicon_ico = client.get("/favicon.ico")
-    assert favicon_ico.status_code == 204
-    assert "max-age=86400" in favicon_ico.headers["cache-control"]
-
     robots = client.get("/robots.txt")
     assert robots.status_code == 200
     assert "User-agent: *" in robots.text
@@ -70,11 +66,10 @@ def test_api_bins_and_bin_detail(client):
     assert bins.status_code == 200
     assert any(b["id"] == bin_id for b in bins.json()["bins"])
 
-    detail = client.get(f"/api/bins/{bin_id}")
-    assert detail.status_code == 200
-    assert detail.json()["bin"]["id"] == bin_id
+    dashboard = client.get(f"/bins/{bin_id}")
+    assert dashboard.status_code == 200
 
-    missing = client.get("/api/bins/missing")
+    missing = client.get("/bins/missing")
     assert missing.status_code == 404
 
 
@@ -85,7 +80,7 @@ def test_delete_bin_api_and_redirect_route(client):
     deleted = client.delete(f"/api/bins/{bin_id}")
     assert deleted.status_code == 200
     assert deleted.json() == {"status": "deleted", "bin_id": bin_id}
-    assert client.get(f"/api/bins/{bin_id}").status_code == 404
+    assert client.get(f"/bins/{bin_id}").status_code == 404
 
     missing = client.delete("/api/bins/missing")
     assert missing.status_code == 404
@@ -95,7 +90,7 @@ def test_delete_bin_api_and_redirect_route(client):
     redirected = client.post(f"/delete/{bin2}", follow_redirects=False)
     assert redirected.status_code == 303
     assert redirected.headers["location"] == "/"
-    assert client.get(f"/api/bins/{bin2}").status_code == 404
+    assert client.get(f"/bins/{bin2}").status_code == 404
 
 
 def test_bin_dashboard_and_messages_not_found(client):
@@ -324,22 +319,6 @@ def test_ingest_rejects_payload_too_large_by_body_without_content_length(tmp_pat
         asyncio.run(main.ingest_hook("direct", FakeReq()))
     assert exc.value.status_code == 413
     assert exc.value.detail == "Payload too large"
-
-
-def test_seed_bin_creates_message_and_redirects(client):
-    create = client.post("/api/bins", json={"name": "seed"})
-    bin_id = create.json()["bin"]["id"]
-    seed = client.post(f"/api/bins/{bin_id}/seed", follow_redirects=False)
-    assert seed.status_code == 303
-    assert seed.headers["location"] == f"/bins/{bin_id}"
-
-    messages = client.get(f"/api/bins/{bin_id}/messages")
-    assert len(messages.json()["messages"]) == 1
-
-
-def test_seed_missing_bin_returns_404(client):
-    res = client.post("/api/bins/missing/seed")
-    assert res.status_code == 404
 
 
 def test_healthz(client):

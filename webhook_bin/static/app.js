@@ -836,9 +836,4 @@ document.addEventListener("DOMContentLoaded", () => {
         .catch((error) => showToast(error.message, "error"));
     }
   });
-
-  // Hide debug-only elements unless ?debug=1 in URL
-  if (!new URLSearchParams(location.search).get("debug")) {
-    document.querySelectorAll("[data-debug-only]").forEach((el) => { el.style.display = "none"; });
-  }
 });

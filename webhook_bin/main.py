@@ -232,11 +232,6 @@ def favicon_svg():
     )
 
 
-@app.get("/favicon.ico", include_in_schema=False)
-def favicon_ico():
-    return Response(status_code=204, headers={"cache-control": "public, max-age=86400"})
-
-
 @app.get("/robots.txt", include_in_schema=False)
 def robots_txt():
     return Response(
@@ -288,14 +283,6 @@ def api_bins(request: Request):
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
     return JSONResponse({"bins": bins}, headers=headers)
-
-
-@app.get("/api/bins/{bin_id}")
-def api_bin(bin_id: str):
-    bin_data = db.get_bin(bin_id)
-    if not bin_data:
-        raise HTTPException(status_code=404, detail="Bin not found")
-    return {"bin": bin_data}
 
 
 @app.delete("/api/bins/{bin_id}")
@@ -583,29 +570,6 @@ def metrics():
         f"webhook_bin_retention_max_messages {RETENTION_MAX_MESSAGES}",
     ]
     return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
-
-
-@app.post("/api/bins/{bin_id}/seed")
-async def seed_bin(bin_id: str):
-    if not db.bin_exists(bin_id):
-        raise HTTPException(status_code=404, detail="Bin not found")
-    sample = {
-        "source": "webhook-bin",
-        "event": "sample",
-        "note": "Local test payload",
-    }
-    message = db.store_message(
-        bin_id=bin_id,
-        method="POST",
-        path=f"/hooks/{bin_id}",
-        query_string="",
-        remote_addr=None,
-        content_type="application/json",
-        headers={"content-type": "application/json"},
-        body=json.dumps(sample).encode("utf-8"),
-    )
-    publish_stream_message(bin_id, message)
-    return RedirectResponse(url=f"/bins/{bin_id}", status_code=303)
 
 
 def run_backup_command(args: list[str]) -> None:
