@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
 from . import db
 
@@ -108,6 +109,10 @@ class VisitorLogMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(VisitorLogMiddleware)
+# Compress responses (JSON/HTML/CSS/JS) to cut ngrok data-transfer-out volume.
+# Placed after VisitorLogMiddleware so it wraps outermost and compresses the
+# final response body (SSE streams are naturally excluded: too small/streamed).
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <rect width="64" height="64" rx="16" fill="#1e1e2e"/>
