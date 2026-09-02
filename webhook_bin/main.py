@@ -108,10 +108,34 @@ class VisitorLogMiddleware(BaseHTTPMiddleware):
         return response
 
 
+# Paths where FastAPI's built-in docs UI pulls JS/CSS from an external CDN;
+# a strict same-origin CSP would break them, so they're excluded here.
+_CSP_EXEMPT_PATHS = ("/docs", "/redoc", "/openapi.json")
+
+_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "connect-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'"
+)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("x-content-type-options", "nosniff")
+        response.headers.setdefault("x-frame-options", "DENY")
+        response.headers.setdefault("referrer-policy", "no-referrer")
+        response.headers.setdefault("permissions-policy", "geolocation=(), camera=(), microphone=()")
+        if not request.url.path.startswith(_CSP_EXEMPT_PATHS):
+            response.headers.setdefault("content-security-policy", _CONTENT_SECURITY_POLICY)
+        return response
+
+
 app.add_middleware(VisitorLogMiddleware)
+# Adds security headers to every response.
+app.add_middleware(SecurityHeadersMiddleware)
 # Compress responses (JSON/HTML/CSS/JS) to cut ngrok data-transfer-out volume.
-# Placed after VisitorLogMiddleware so it wraps outermost and compresses the
-# final response body (SSE streams are naturally excluded: too small/streamed).
+# Added last (outermost) so it wraps and compresses the final response body
+# (SSE streams are naturally excluded: too small/streamed).
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">

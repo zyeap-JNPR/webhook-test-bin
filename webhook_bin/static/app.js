@@ -137,7 +137,9 @@ function renderTimestamps(root = document) {
     el.textContent = formatTimestamp(el.dataset.iso);
   });
   root.querySelectorAll("[data-timezone]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.timezone === uiTimezone);
+    const isActive = button.dataset.timezone === uiTimezone;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
   });
 }
 

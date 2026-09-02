@@ -283,6 +283,7 @@ input:focus-visible, button:focus-visible, select:focus-visible, a:focus-visible
 .filter-advanced { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .filter-advanced input { flex: 1 1 120px; min-width: 0; padding: 0.5rem 0.75rem; }
 .filter-advanced.hidden { display: none; }
+.hidden { display: none; }
 .pill-sig-verified { border-color: var(--green); color: var(--green); background: rgba(166, 227, 161, 0.1); }
 .pill-sig-failed { border-color: var(--red); color: var(--red); background: rgba(243, 139, 168, 0.1); }
 .pill-sig-missing { border-color: var(--yellow); color: var(--yellow); background: rgba(249, 226, 175, 0.1); }

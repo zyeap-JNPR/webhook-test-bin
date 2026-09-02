@@ -16,10 +16,10 @@
         <p class="subtitle">Local webhook inbox for headers, body, and payload inspection</p>
       </div>
       <div class="toolbar">
-        <div class="timezone-toggle" data-timezone-toggle>
-          <button type="button" class="toggle-btn active" data-timezone="utc">UTC</button>
-          <button type="button" class="toggle-btn" data-timezone="pt">PT</button>
-          <button type="button" class="toggle-btn" data-timezone="rel">Rel</button>
+        <div class="timezone-toggle" data-timezone-toggle role="group" aria-label="Timestamp timezone">
+          <button type="button" class="toggle-btn active" data-timezone="utc" aria-pressed="true">UTC</button>
+          <button type="button" class="toggle-btn" data-timezone="pt" aria-pressed="false">PT</button>
+          <button type="button" class="toggle-btn" data-timezone="rel" aria-pressed="false">Rel</button>
         </div>
         <a class="ghost" href="/docs">API docs</a>
       </div>

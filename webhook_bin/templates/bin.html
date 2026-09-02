@@ -60,7 +60,7 @@
     <div id="messages" data-bin-id="{{ bin.id }}" data-bootstrap-page-size="{{ bootstrap_page_size }}" class="message-list message-list-scroll"><div class="skeleton-list">{% for _ in range(4) %}<div class="skeleton-item"></div>{% endfor %}</div></div>
     <script type="application/json" id="bootstrap-messages">{{ bootstrap_messages_json | safe }}</script>
     <div class="messages-footer">
-      <button type="button" id="load-more-btn" style="display:none">Load more</button>
+      <button type="button" id="load-more-btn" class="hidden">Load more</button>
     </div>
   </section>
 
