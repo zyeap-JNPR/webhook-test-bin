@@ -23,12 +23,22 @@ from starlette.middleware.gzip import GZipMiddleware
 from . import db
 
 
+DEFAULT_RETENTION_MAX_MESSAGES = 10_000
+
+
+def _parse_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return int(raw)
+
+
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
-MAX_BODY_BYTES = int(os.getenv("WEBHOOK_BIN_MAX_BODY_BYTES", str(1 * 1024 * 1024)))
+MAX_BODY_BYTES = _parse_int_env("WEBHOOK_BIN_MAX_BODY_BYTES", 1 * 1024 * 1024)
 HMAC_SECRET = os.getenv("WEBHOOK_BIN_HMAC_SECRET", "").encode("utf-8")
-RETENTION_DAYS = int(os.getenv("WEBHOOK_BIN_RETENTION_DAYS", "0") or "0")
-RETENTION_MAX_MESSAGES = int(os.getenv("WEBHOOK_BIN_RETENTION_MAX_MESSAGES", "0") or "0")
+RETENTION_DAYS = _parse_int_env("WEBHOOK_BIN_RETENTION_DAYS", 0)
+RETENTION_MAX_MESSAGES = _parse_int_env("WEBHOOK_BIN_RETENTION_MAX_MESSAGES", DEFAULT_RETENTION_MAX_MESSAGES)
 LOGGER = logging.getLogger("webhook_bin")
 if not LOGGER.handlers:
     logging.basicConfig(level=logging.INFO)
@@ -454,24 +464,24 @@ def api_message_curl(message_id: int, request: Request):
     return Response(message_to_curl(message, base=public_base_url(request)), media_type="text/plain")
 
 
-@app.get("/api/bins/{bin_id}/export.ndjson", response_class=Response)
+@app.get("/api/bins/{bin_id}/export.ndjson")
 def api_bin_export_ndjson(bin_id: str):
     if not db.bin_exists(bin_id):
         raise HTTPException(status_code=404, detail="Bin not found")
-    before_id = None
-    lines: list[str] = []
-    while True:
-        rows, next_before_id = db.list_messages(bin_id, limit=500, before_id=before_id)
-        if not rows:
-            break
-        for row in rows:
-            lines.append(json.dumps(row, sort_keys=True))
-        if not next_before_id:
-            break
-        before_id = next_before_id
-    payload = "\n".join(lines) + ("\n" if lines else "")
-    return Response(
-        payload,
+
+    def line_gen():
+        before_id = None
+        while True:
+            rows, next_before_id = db.list_messages(bin_id, limit=500, before_id=before_id)
+            if not rows:
+                break
+            yield "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+            if not next_before_id:
+                break
+            before_id = next_before_id
+
+    return StreamingResponse(
+        line_gen(),
         media_type="application/x-ndjson",
         headers={"content-disposition": f'attachment; filename="{bin_id}.ndjson"'},
     )

@@ -379,11 +379,17 @@ def test_healthz(client):
     assert res.json() == {"status": "ok"}
 
 
-def test_metrics(client):
+def test_metrics_and_retention_env_parsing(client, monkeypatch: pytest.MonkeyPatch):
     res = client.get("/metrics")
     assert res.status_code == 200
     assert "webhook_bin_bins_total" in res.text
     assert "webhook_bin_messages_total" in res.text
+    assert f"webhook_bin_retention_max_messages {main.DEFAULT_RETENTION_MAX_MESSAGES}" in res.text
+
+    monkeypatch.delenv("WEBHOOK_BIN_RETENTION_MAX_MESSAGES", raising=False)
+    assert main._parse_int_env("WEBHOOK_BIN_RETENTION_MAX_MESSAGES", 10_000) == 10_000
+    monkeypatch.setenv("WEBHOOK_BIN_RETENTION_MAX_MESSAGES", "0")
+    assert main._parse_int_env("WEBHOOK_BIN_RETENTION_MAX_MESSAGES", 10_000) == 0
 
 
 def test_api_messages_limit_is_clamped(client):

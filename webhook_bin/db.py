@@ -66,10 +66,10 @@ def initialize() -> None:
                 signature_details TEXT
             );
 
-            CREATE INDEX IF NOT EXISTS idx_webhook_messages_bin_id
-                ON webhook_messages (bin_id);
-            CREATE INDEX IF NOT EXISTS idx_webhook_messages_bin_id_id
-                ON webhook_messages (bin_id, id DESC);
+            DROP INDEX IF EXISTS idx_webhook_messages_bin_id;
+            DROP INDEX IF EXISTS idx_webhook_messages_bin_id_id;
+            CREATE INDEX IF NOT EXISTS idx_webhook_messages_bin_id_id_ts
+                ON webhook_messages (bin_id, id DESC, received_at);
             CREATE INDEX IF NOT EXISTS idx_webhook_messages_received_at
                 ON webhook_messages (received_at);
 
@@ -279,14 +279,10 @@ def list_messages(
             method,
             path,
             query_string,
-            remote_addr,
             content_type,
-            headers_json,
-            body_text,
-            body_base64,
-            body_size,
-            signature_status,
-            signature_details
+            COALESCE(body_size, length(CAST(body_text AS BLOB))) AS body_size,
+            substr(body_text, 1, 120) AS body_preview,
+            signature_status
         FROM webhook_messages
         WHERE {' AND '.join(where_clauses)}
         ORDER BY id DESC
@@ -299,7 +295,7 @@ def list_messages(
     if len(rows) > limit:
         next_before_id = rows[limit - 1]["id"]
         rows = rows[:limit]
-    return [row_to_message(row, include_body=False, slim=True) for row in rows], next_before_id
+    return [slim_row_to_message(row) for row in rows], next_before_id
 
 
 def get_message(message_id: int) -> dict[str, Any] | None:
@@ -359,9 +355,8 @@ def list_messages_after(bin_id: str, after_id: int, limit: int = 500) -> list[di
                 path,
                 query_string,
                 content_type,
-                body_text,
-                body_base64,
-                body_size,
+                COALESCE(body_size, length(CAST(body_text AS BLOB))) AS body_size,
+                substr(body_text, 1, 120) AS body_preview,
                 signature_status
             FROM webhook_messages
             WHERE bin_id = ? AND id > ?
@@ -370,7 +365,7 @@ def list_messages_after(bin_id: str, after_id: int, limit: int = 500) -> list[di
             """,
             (bin_id, after_id, limit),
         ).fetchall()
-    return [row_to_message(row, include_body=False, slim=True) for row in rows]
+    return [slim_row_to_message(row) for row in rows]
 
 
 def get_latest_message_id(bin_id: str) -> int:
@@ -391,19 +386,21 @@ def apply_retention(bin_id: str, max_messages: int | None = None, retention_days
                 (bin_id, cutoff),
             )
         if max_messages and max_messages > 0:
-            conn.execute(
+            cutoff_row = conn.execute(
                 """
-                DELETE FROM webhook_messages
-                WHERE id IN (
-                    SELECT id
-                    FROM webhook_messages
-                    WHERE bin_id = ?
-                    ORDER BY id DESC
-                    LIMIT -1 OFFSET ?
-                )
+                SELECT id
+                FROM webhook_messages
+                WHERE bin_id = ?
+                ORDER BY id DESC
+                LIMIT 1 OFFSET ?
                 """,
                 (bin_id, max_messages),
-            )
+            ).fetchone()
+            if cutoff_row is not None:
+                conn.execute(
+                    "DELETE FROM webhook_messages WHERE bin_id = ? AND id <= ?",
+                    (bin_id, cutoff_row["id"]),
+                )
 
 
 def get_metrics() -> dict[str, int]:
@@ -433,27 +430,28 @@ def restore_database(source_path: str) -> None:
             source_conn.backup(dest_conn)
 
 
-def row_to_message(row: sqlite3.Row, include_body: bool, slim: bool = False) -> dict[str, Any]:
+def slim_row_to_message(row: sqlite3.Row) -> dict[str, Any]:
+    content_type = (row["content_type"] or "").lower()
+    return {
+        "id": row["id"],
+        "bin_id": row["bin_id"],
+        "received_at": row["received_at"],
+        "method": row["method"],
+        "path": row["path"],
+        "query_string": row["query_string"],
+        "body_size": int(row["body_size"] or 0),
+        "body_preview": row["body_preview"] or "",
+        "has_json": "json" in content_type,
+        "signature_status": row["signature_status"],
+    }
+
+
+def row_to_message(row: sqlite3.Row, include_body: bool) -> dict[str, Any]:
     body_text = row["body_text"]
     content_type = (row["content_type"] or "").lower()
     body_size = row["body_size"]
     if body_size is None:
         body_size = len(base64.b64decode(row["body_base64"]))
-
-    if slim:
-        # Lightweight card representation: no headers, no body_json, short preview
-        return {
-            "id": row["id"],
-            "bin_id": row["bin_id"],
-            "received_at": row["received_at"],
-            "method": row["method"],
-            "path": row["path"],
-            "query_string": row["query_string"],
-            "body_size": body_size,
-            "body_preview": body_text[:120],
-            "has_json": "json" in content_type,
-            "signature_status": row["signature_status"],
-        }
 
     headers = json.loads(row["headers_json"]) if row["headers_json"] else {}
     body_json = None

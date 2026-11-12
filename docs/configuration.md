@@ -12,7 +12,7 @@ All settings are environment variables. Every variable is optional.
 | `WEBHOOK_BIN_MAX_BODY_BYTES` | `1048576` (1 MB) | Max accepted webhook payload size. |
 | `WEBHOOK_BIN_HMAC_SECRET` | _(unset)_ | Shared secret for HMAC SHA256 signature verification. When unset, signatures are reported as `disabled`. |
 | `WEBHOOK_BIN_RETENTION_DAYS` | `0` | Delete messages older than N days. `0` disables. |
-| `WEBHOOK_BIN_RETENTION_MAX_MESSAGES` | `0` | Keep only the latest N messages per bin. `0` disables. |
+| `WEBHOOK_BIN_RETENTION_MAX_MESSAGES` | `10000` | Keep only the latest N messages per bin. `0` disables. |
 
 ## Notes
 

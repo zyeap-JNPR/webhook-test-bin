@@ -71,7 +71,8 @@ All settings are optional environment variables (full details in [docs/configura
 | `PUBLIC_BASE_URL` | _(request origin)_ | Public base URL used for displayed ingest URLs and replay `curl` commands |
 | `WEBHOOK_BIN_HMAC_SECRET` | _(unset)_ | Shared secret to verify incoming HMAC-SHA256 signature headers |
 | `WEBHOOK_BIN_MAX_BODY_BYTES` | `1048576` (1 MB) | Maximum accepted webhook request body size |
-| `WEBHOOK_BIN_RETENTION_DAYS` / `WEBHOOK_BIN_RETENTION_MAX_MESSAGES` | `0` (disabled) | Per-bin automatic pruning by age (days) and/or message count |
+| `WEBHOOK_BIN_RETENTION_DAYS` | `0` (disabled) | Per-bin automatic pruning by age (days) |
+| `WEBHOOK_BIN_RETENTION_MAX_MESSAGES` | `10000` | Max retained messages per bin (`0` disables) |
 
 ## Data & backups
 

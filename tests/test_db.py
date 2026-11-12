@@ -24,7 +24,8 @@ def test_initialize_creates_tables_and_index(temp_db: Path):
     idx_rows = conn.execute("PRAGMA index_list('webhook_messages')").fetchall()
     conn.close()
     idx_names = {row[1] for row in idx_rows}
-    assert "idx_webhook_messages_bin_id" in idx_names
+    assert "idx_webhook_messages_bin_id_id_ts" in idx_names
+    assert "idx_webhook_messages_bin_id" not in idx_names
 
 
 def test_create_and_get_bin(temp_db: Path):

@@ -29,6 +29,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=/home/pi/webhook-test-bin
+Environment=WEBHOOK_BIN_RETENTION_MAX_MESSAGES=10000
 ExecStart=/home/pi/webhook-test-bin/.venv/bin/webhook-bin
 Restart=always
 User=pi
