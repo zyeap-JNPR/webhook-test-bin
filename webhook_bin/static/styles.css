@@ -180,7 +180,7 @@ input:focus-visible, button:focus-visible, select:focus-visible, a:focus-visible
 }
 .danger:hover { border-color: var(--red); }
 .ghost { padding: 0.7rem 0.9rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
-.meta { display: grid; gap: 0.7rem; margin-top: 1rem; }
+.meta { display: grid; gap: 0.7rem; margin-top: 1rem; align-content: start; }
 .meta div { display: grid; gap: 0.2rem; }
 .meta dt { color: var(--muted); font-size: 0.85rem; }
 .meta dd { margin: 0; overflow-wrap: anywhere; }
@@ -249,10 +249,11 @@ input:focus-visible, button:focus-visible, select:focus-visible, a:focus-visible
   .split-layout { grid-template-columns: 1fr; }
   .split-panel { height: 50vh; }
 }
-.message-list { display: grid; gap: 0.75rem; }
+.message-list { display: grid; gap: 0.75rem; align-content: start; }
 .message-item {
   display: grid;
   gap: 0.5rem;
+  align-content: start;
   padding: 0.85rem;
   background: var(--panel-2);
   border-radius: 0.8rem;
@@ -418,7 +419,7 @@ input:focus-visible, button:focus-visible, select:focus-visible, a:focus-visible
 /* Loading skeleton shown for the messages panel before the first render
    (covers the fallback-fetch path; server-rendered bootstrap replaces this
    instantly on the common path). */
-.skeleton-list { display: grid; gap: 0.75rem; }
+.skeleton-list { display: grid; gap: 0.75rem; align-content: start; }
 .skeleton-item {
   height: 4.5rem;
   border-radius: 0.8rem;
