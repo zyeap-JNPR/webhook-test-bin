@@ -38,9 +38,9 @@
 ## UI flow
 
 - Home page lists bins.
-- Bin page shows ingest URL and message feed.
-- Clicking message loads full headers and body.
-- Dashboard auto-refreshes every 5 seconds.
+- Bin page shows ingest URL and message feed (SSR-bootstrapped on initial load).
+- Clicking a message loads full headers, parsed query parameters, and body (`#msg-<id>` deep-linkable).
+- Dashboard receives live updates over SSE (single leader connection shared across tabs via `BroadcastChannel` + Web Locks, with backoff polling fallback).
 
 ## Local storage
 

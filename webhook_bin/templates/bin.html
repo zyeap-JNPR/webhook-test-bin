@@ -13,7 +13,7 @@
   </div>
 
   <div class="callout">
-    <div><strong>POST URL</strong> <code id="ingest-url">{{ base_url }}/hooks/{{ bin.id }}</code></div>
+    <div><strong>Ingest URL</strong> <code id="ingest-url">{{ base_url }}/hooks/{{ bin.id }}</code></div>
     <div class="toolbar">
       <span id="live-status" class="pill">Live: polling</span>
       <button type="button" class="copy-btn" data-copy-target="ingest-url">Copy</button>
@@ -28,32 +28,35 @@
       <div class="messages-title-row">
         <h2>Messages <span id="messages-count" class="count-badge"></span></h2>
         <div class="messages-controls">
-          <select id="page-size-select" title="Messages per page">
+          <select id="page-size-select" title="Messages per page" aria-label="Messages per page">
             <option value="25">25 / page</option>
             <option value="50">50 / page</option>
             <option value="100">100 / page</option>
           </select>
-          <button type="button" id="refresh-btn">Refresh</button>
+          <button type="button" id="refresh-btn" title="Refresh messages (r)">Refresh</button>
+          <button type="button" id="clear-messages-btn" class="ghost-danger hidden" title="Delete all messages in this bin">Clear</button>
         </div>
       </div>
       <form id="message-filter-form" class="filter-form">
         <div class="filter-row">
-          <select name="method">
+          <select name="method" aria-label="Filter by HTTP method">
             <option value="">All methods</option>
             <option value="POST">POST</option>
+            <option value="GET">GET</option>
             <option value="PUT">PUT</option>
             <option value="PATCH">PATCH</option>
             <option value="DELETE">DELETE</option>
+            <option value="HEAD">HEAD</option>
             <option value="OPTIONS">OPTIONS</option>
           </select>
-          <input name="q" placeholder="Search path/body/header..." />
+          <input name="q" placeholder="Search path/body/header… (/)" aria-label="Search messages" />
           <button type="submit" class="btn-primary">Apply</button>
           <button type="button" id="filter-reset-btn" class="ghost">Reset</button>
-          <button type="button" id="filter-advanced-btn" class="ghost">Advanced ▾</button>
+          <button type="button" id="filter-advanced-btn" class="ghost" aria-expanded="false" aria-controls="filter-advanced">Advanced ▾</button>
         </div>
         <div id="filter-advanced" class="filter-advanced hidden">
-          <input name="header_key" placeholder="Header key" />
-          <input name="header_value" placeholder="Header value" />
+          <input name="header_key" placeholder="Header key" aria-label="Header key" />
+          <input name="header_value" placeholder="Header value" aria-label="Header value" />
         </div>
       </form>
     </div>

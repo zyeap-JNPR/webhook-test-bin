@@ -207,8 +207,8 @@ def test_list_messages_filters(temp_db: Path):
         path="/hooks/flt1",
         query_string="",
         remote_addr=None,
-        content_type="application/json",
-        headers={"x-kind": "alpha"},
+        content_type="application/json; charset=utf-8",
+        headers={"content-type": "application/json; charset=utf-8", "x-kind": "alpha_one"},
         body=b'{"kind":"alpha"}',
     )
     db.store_message(
@@ -218,12 +218,64 @@ def test_list_messages_filters(temp_db: Path):
         query_string="",
         remote_addr=None,
         content_type="text/plain",
-        headers={"x-kind": "beta"},
+        headers={"x-kind": "beta-two"},
         body=b"beta body",
     )
     rows, _ = db.list_messages("flt1", method="POST", query="alpha")
     assert len(rows) == 1
     assert rows[0]["method"] == "POST"
+
+    # header_value alone (without header_key)
+    by_val, _ = db.list_messages("flt1", header_value="charset=utf-8")
+    assert len(by_val) == 1
+    assert by_val[0]["method"] == "POST"
+
+    # header_key + substring header_value + literal underscore escaping
+    by_pair, _ = db.list_messages("flt1", header_key="x-kind", header_value="alpha_one")
+    assert len(by_pair) == 1
+    # "_" must not act as a single-char wildcard matching "alphaXone"
+    db.store_message(
+        bin_id="flt1",
+        method="POST",
+        path="/hooks/flt1",
+        query_string="",
+        remote_addr=None,
+        content_type="text/plain",
+        headers={"x-kind": "alphaXone"},
+        body=b"wildcard-check",
+    )
+    exact_underscore, _ = db.list_messages("flt1", header_key="x-kind", header_value="alpha_one")
+    assert len(exact_underscore) == 1
+
+
+def test_delete_message_and_clear_messages(temp_db: Path):
+    db.create_bin("clr1", "clear")
+    m1 = db.store_message(
+        bin_id="clr1",
+        method="POST",
+        path="/hooks/clr1",
+        query_string="",
+        remote_addr=None,
+        content_type="text/plain",
+        headers={},
+        body=b"one",
+    )
+    db.store_message(
+        bin_id="clr1",
+        method="POST",
+        path="/hooks/clr1",
+        query_string="",
+        remote_addr=None,
+        content_type="text/plain",
+        headers={},
+        body=b"two",
+    )
+    assert db.delete_message(m1["id"]) == "clr1"
+    assert db.delete_message(m1["id"]) is None
+    assert db.get_bin("clr1")["message_count"] == 1
+
+    assert db.clear_messages("clr1") == 1
+    assert db.get_bin("clr1")["message_count"] == 0
 
 
 def test_backup_and_restore_database(temp_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

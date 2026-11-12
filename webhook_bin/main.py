@@ -70,6 +70,13 @@ app.mount("/static", CacheControlledStaticFiles(directory=str(BASE_DIR / "static
 _VISITOR_LOG_SKIP_PREFIXES = ("/static/", "/healthz", "/metrics", "/favicon", "/api/", "/hooks/")
 
 
+def _client_ip(request: Request) -> str | None:
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if forwarded:
+        return forwarded
+    return request.client.host if request.client else None
+
+
 class VisitorLogMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         start = time.monotonic()
@@ -77,10 +84,7 @@ class VisitorLogMiddleware(BaseHTTPMiddleware):
         duration_ms = int((time.monotonic() - start) * 1000)
         path = request.url.path
         if not any(path.startswith(p) for p in _VISITOR_LOG_SKIP_PREFIXES):
-            ip = (
-                request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-                or (request.client.host if request.client else None)
-            )
+            ip = _client_ip(request)
             ua = request.headers.get("user-agent")
             referer = request.headers.get("referer")
             LOGGER.info(
@@ -176,8 +180,8 @@ def verify_signature(headers: dict[str, str], body: bytes) -> tuple[str, str]:
     return "failed", "HMAC SHA256 mismatch"
 
 
-def message_to_curl(message: dict) -> str:
-    url = f"http://example.local{message['path']}"
+def message_to_curl(message: dict, base: str = "http://example.local") -> str:
+    url = f"{base.rstrip('/')}{message['path']}"
     if message.get("query_string"):
         url = f"{url}?{message['query_string']}"
     parts = ["curl", "-X", message["method"], shlex.quote(url)]
@@ -200,21 +204,17 @@ def message_to_stream_summary(message: dict) -> dict[str, object]:
         "method": message["method"],
         "path": message["path"],
         "query_string": message.get("query_string", ""),
-        "body_preview": message.get("body_preview", ""),
+        "body_size": message.get("body_size", 0),
+        "body_preview": str(message.get("body_preview", ""))[:120],
         "has_json": bool(message.get("body_json") is not None or "json" in content_type),
         "signature_status": message.get("signature_status"),
     }
 
 
-def publish_stream_message(bin_id: str, message: dict) -> None:
+def publish_stream_event(bin_id: str, event: dict[str, object]) -> None:
     subscribers = _STREAM_SUBSCRIBERS.get(bin_id)
     if not subscribers:
         return
-    event = {
-        "type": "new_message",
-        "latest_id": int(message["id"]),
-        "message": message_to_stream_summary(message),
-    }
     for queue in tuple(subscribers):
         try:
             queue.put_nowait(event)
@@ -227,6 +227,17 @@ def publish_stream_message(bin_id: str, message: dict) -> None:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
                 pass
+
+
+def publish_stream_message(bin_id: str, message: dict) -> None:
+    publish_stream_event(
+        bin_id,
+        {
+            "type": "new_message",
+            "latest_id": int(message["id"]),
+            "message": message_to_stream_summary(message),
+        },
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -295,7 +306,7 @@ def _etag_for(basis: str) -> str:
 
 
 def _bins_list_etag(bins: list[dict]) -> str:
-    basis = "|".join(f"{b['id']}:{b['message_count']}:{b['last_message_at']}" for b in bins)
+    basis = "|".join(f"{b['id']}:{b['updated_at']}:{b['message_count']}:{b['last_message_at']}" for b in bins)
     return _etag_for(basis)
 
 
@@ -370,7 +381,7 @@ def api_messages(
     if not bin_data:
         raise HTTPException(status_code=404, detail="Bin not found")
     etag = _etag_for(
-        f"{bin_id}:{bin_data['message_count']}:{bin_data['last_message_at']}:"
+        f"{bin_id}:{bin_data['updated_at']}:{bin_data['message_count']}:{bin_data['last_message_at']}:"
         f"{limit}:{before_id}:{after_id}:{method}:{q}:{header_key}:{header_value}:{since}:{until}"
     )
     headers = {"etag": etag, "cache-control": "no-cache"}
@@ -398,12 +409,30 @@ def api_messages(
     )
 
 
+@app.delete("/api/bins/{bin_id}/messages")
+def clear_api_bin_messages(bin_id: str):
+    if not db.bin_exists(bin_id):
+        raise HTTPException(status_code=404, detail="Bin not found")
+    deleted = db.clear_messages(bin_id)
+    publish_stream_event(bin_id, {"type": "messages_cleared"})
+    return {"status": "cleared", "bin_id": bin_id, "deleted": deleted}
+
+
 @app.get("/api/messages/{message_id}")
 def api_message(message_id: int):
     message = db.get_message(message_id)
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
     return {"message": message}
+
+
+@app.delete("/api/messages/{message_id}")
+def delete_api_message(message_id: int):
+    bin_id = db.delete_message(message_id)
+    if not bin_id:
+        raise HTTPException(status_code=404, detail="Message not found")
+    publish_stream_event(bin_id, {"type": "message_deleted", "message_id": message_id})
+    return {"status": "deleted", "message_id": message_id, "bin_id": bin_id}
 
 
 @app.get("/api/messages/{message_id}/export")
@@ -418,11 +447,11 @@ def api_message_export(message_id: int):
 
 
 @app.get("/api/messages/{message_id}/curl", response_class=Response)
-def api_message_curl(message_id: int):
+def api_message_curl(message_id: int, request: Request):
     message = db.get_message(message_id)
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
-    return Response(message_to_curl(message), media_type="text/plain")
+    return Response(message_to_curl(message, base=public_base_url(request)), media_type="text/plain")
 
 
 @app.get("/api/bins/{bin_id}/export.ndjson", response_class=Response)
@@ -483,12 +512,14 @@ async def stream_messages(bin_id: str, request: Request, after_id: int = 0):
                 except TimeoutError:
                     yield ": keepalive\n\n"
                     continue
-                latest_id = int(event["latest_id"])
-                if latest_id <= last_event_id:
-                    continue
-                last_event_id = latest_id
-                payload = json.dumps(event)
-                yield f"id: {latest_id}\nevent: message\ndata: {payload}\n\n"
+                if event.get("type") == "new_message":
+                    latest_id = int(event["latest_id"])
+                    if latest_id <= last_event_id:
+                        continue
+                    last_event_id = latest_id
+                    yield f"id: {latest_id}\nevent: message\ndata: {json.dumps(event)}\n\n"
+                else:
+                    yield f"event: message\ndata: {json.dumps(event)}\n\n"
         finally:
             subscribers = _STREAM_SUBSCRIBERS.get(bin_id)
             if subscribers is not None:
@@ -507,8 +538,13 @@ async def stream_messages(bin_id: str, request: Request, after_id: int = 0):
     )
 
 
-@app.api_route("/hooks/{bin_id}", methods=["POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-async def ingest_hook(bin_id: str, request: Request):
+_HOOK_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+
+
+@app.api_route("/hooks/{bin_id}", methods=_HOOK_METHODS)
+@app.api_route("/hooks/{bin_id}/{subpath:path}", methods=_HOOK_METHODS, include_in_schema=False)
+async def ingest_hook(bin_id: str, request: Request, subpath: str = ""):
+    del subpath  # full request.url.path is recorded directly
     if not db.bin_exists(bin_id):
         raise HTTPException(status_code=404, detail="Bin not found")
 
@@ -525,12 +561,13 @@ async def ingest_hook(bin_id: str, request: Request):
         raise HTTPException(status_code=413, detail="Payload too large")
     headers = {k.lower(): v for k, v in request.headers.items()}
     signature_status, signature_details = verify_signature(headers, body)
+    remote_addr = _client_ip(request)
     message = db.store_message(
         bin_id=bin_id,
         method=request.method,
         path=request.url.path,
         query_string=str(request.url.query),
-        remote_addr=request.client.host if request.client else None,
+        remote_addr=remote_addr,
         content_type=request.headers.get("content-type"),
         headers=headers,
         body=body,
@@ -550,13 +587,15 @@ async def ingest_hook(bin_id: str, request: Request):
                 "bin_id": bin_id,
                 "message_id": message["id"],
                 "method": request.method,
-                "remote_addr": request.client.host if request.client else None,
+                "remote_addr": remote_addr,
                 "content_type": request.headers.get("content-type"),
                 "signature_status": signature_status,
                 "body_size": len(body),
             }
         )
     )
+    if request.method == "HEAD":
+        return Response(status_code=200)
     ack = {
         "id": message["id"],
         "bin_id": message["bin_id"],

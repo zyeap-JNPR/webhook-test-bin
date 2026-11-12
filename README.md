@@ -19,12 +19,13 @@ and parsed body in a live dashboard.
 
 ## Features
 
-- Unique ingest URL per bin, backed by SQLite
-- Live message updates (SSE) with polling fallback
-- Search / filter + cursor pagination
-- HTTP method color-coding and JSON pretty/compact view
-- Export to JSON, NDJSON, or a replay cURL command
-- UTC / PT timestamp toggle
+- Unique ingest URL per bin (including arbitrary subpaths `/hooks/<bin_id>/...`), backed by SQLite
+- Live message updates (SSE with cross-tab leader election) and polling fallback
+- Search / header filter + cursor pagination
+- HTTP method color-coding, structured headers/query view, and JSON pretty/compact/raw view
+- Export to JSON, NDJSON, one-click body/header copy, or a runnable replay cURL command
+- Delete individual messages or clear a bin without changing its ingest URL
+- UTC / PT / Relative timestamp toggle
 - Optional HMAC signature verification
 - Optional retention policy (by age and/or message count)
 - JSON API + Prometheus `/metrics`

@@ -68,6 +68,8 @@ def initialize() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_webhook_messages_bin_id
                 ON webhook_messages (bin_id);
+            CREATE INDEX IF NOT EXISTS idx_webhook_messages_bin_id_id
+                ON webhook_messages (bin_id, id DESC);
             CREATE INDEX IF NOT EXISTS idx_webhook_messages_received_at
                 ON webhook_messages (received_at);
 
@@ -212,6 +214,10 @@ def store_message(
     return get_message(message_id)
 
 
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def list_messages(
     bin_id: str,
     limit: int = 100,
@@ -236,17 +242,28 @@ def list_messages(
         where_clauses.append("method = ?")
         params.append(method.upper())
     if query:
-        where_clauses.append("(path LIKE ? OR query_string LIKE ? OR body_text LIKE ? OR headers_json LIKE ?)")
-        like = f"%{query}%"
+        where_clauses.append(
+            "(path LIKE ? ESCAPE '\\' OR query_string LIKE ? ESCAPE '\\' "
+            "OR body_text LIKE ? ESCAPE '\\' OR headers_json LIKE ? ESCAPE '\\')"
+        )
+        like = f"%{_escape_like(query)}%"
         params.extend([like, like, like, like])
-    if header_key:
-        header_key_like = f'%"{header_key.lower()}":%'
-        where_clauses.append("lower(headers_json) LIKE ?")
-        params.append(header_key_like)
     if header_key and header_value:
-        header_pair_like = f'%"{header_key.lower()}": "{header_value}"%'
-        where_clauses.append("lower(headers_json) LIKE ?")
-        params.append(header_pair_like.lower())
+        where_clauses.append(
+            "EXISTS (SELECT 1 FROM json_each(headers_json) "
+            "WHERE lower(key) LIKE ? ESCAPE '\\' AND lower(CAST(value AS TEXT)) LIKE ? ESCAPE '\\')"
+        )
+        params.extend([f"%{_escape_like(header_key.lower())}%", f"%{_escape_like(header_value.lower())}%"])
+    elif header_key:
+        where_clauses.append(
+            "EXISTS (SELECT 1 FROM json_each(headers_json) WHERE lower(key) LIKE ? ESCAPE '\\')"
+        )
+        params.append(f"%{_escape_like(header_key.lower())}%")
+    elif header_value:
+        where_clauses.append(
+            "EXISTS (SELECT 1 FROM json_each(headers_json) WHERE lower(CAST(value AS TEXT)) LIKE ? ESCAPE '\\')"
+        )
+        params.append(f"%{_escape_like(header_value.lower())}%")
     if since:
         where_clauses.append("received_at >= ?")
         params.append(since)
@@ -310,6 +327,24 @@ def get_message(message_id: int) -> dict[str, Any] | None:
             (message_id,),
         ).fetchone()
     return row_to_message(row, include_body=True) if row else None
+
+
+def delete_message(message_id: int) -> str | None:
+    with connect() as conn:
+        row = conn.execute("SELECT bin_id FROM webhook_messages WHERE id = ?", (message_id,)).fetchone()
+        if not row:
+            return None
+        bin_id = str(row["bin_id"])
+        conn.execute("DELETE FROM webhook_messages WHERE id = ?", (message_id,))
+        conn.execute("UPDATE bins SET updated_at = ? WHERE id = ?", (utc_now(), bin_id))
+    return bin_id
+
+
+def clear_messages(bin_id: str) -> int:
+    with connect() as conn:
+        cursor = conn.execute("DELETE FROM webhook_messages WHERE bin_id = ?", (bin_id,))
+        conn.execute("UPDATE bins SET updated_at = ? WHERE id = ?", (utc_now(), bin_id))
+    return cursor.rowcount
 
 
 def list_messages_after(bin_id: str, after_id: int, limit: int = 500) -> list[dict[str, Any]]:
@@ -384,8 +419,8 @@ def get_metrics() -> dict[str, int]:
 def backup_database(target_path: str) -> None:
     destination = Path(target_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(database_path()) as source_conn:
-        with sqlite3.connect(destination) as dest_conn:
+    with sqlite3.connect(database_path(), factory=ManagedConnection) as source_conn:
+        with sqlite3.connect(destination, factory=ManagedConnection) as dest_conn:
             source_conn.backup(dest_conn)
 
 
@@ -393,8 +428,8 @@ def restore_database(source_path: str) -> None:
     source = Path(source_path)
     if not source.exists():
         raise FileNotFoundError(f"Backup file not found: {source}")
-    with sqlite3.connect(source) as source_conn:
-        with sqlite3.connect(database_path()) as dest_conn:
+    with sqlite3.connect(source, factory=ManagedConnection) as source_conn:
+        with sqlite3.connect(database_path(), factory=ManagedConnection) as dest_conn:
             source_conn.backup(dest_conn)
 
 

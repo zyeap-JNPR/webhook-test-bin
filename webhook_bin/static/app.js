@@ -51,6 +51,22 @@ async function deleteBin(binId) {
   }
 }
 
+async function deleteMessage(messageId) {
+  const res = await fetch(`/api/messages/${messageId}`, { method: "DELETE" });
+  if (!res.ok) {
+    if (res.status === 404) throw new Error("message not found");
+    throw new Error("message delete failed");
+  }
+}
+
+async function clearBinMessages(binId) {
+  const res = await fetch(`/api/bins/${binId}/messages`, { method: "DELETE" });
+  if (!res.ok) {
+    if (res.status === 404) throw new Error("bin not found");
+    throw new Error("clear messages failed");
+  }
+}
+
 function showToast(message, level = "info") {
   const root = document.getElementById("toast-root");
   if (!root) return;
@@ -213,6 +229,14 @@ function renderHomepage(data) {
   renderTimestamps(document);
 }
 
+function formatBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
 function messageCard(message) {
   const rawPreview = message.body_preview || "";
   const body = rawPreview.length > 80 ? rawPreview.slice(0, 80) + "…" : rawPreview;
@@ -223,15 +247,19 @@ function messageCard(message) {
   const sig = (sigStatus && sigStatus !== "disabled")
     ? `<span class="pill pill-sig-${escapeHtml(sigStatus)}">sig:${escapeHtml(sigStatus)}</span>`
     : "";
+  const size = message.body_size != null ? `<span class="size-label">${escapeHtml(formatBytes(message.body_size))}</span>` : "";
+  const previewHtml = body
+    ? `<div class="message-body">${escapeHtml(body)}</div>`
+    : `<div class="message-body message-preview-empty">(empty body)</div>`;
   return `
-    <button class="message-item" data-message-id="${message.id}">
+    <button type="button" class="message-item" data-message-id="${message.id}">
       <div class="message-head">
         <span class="message-id-method">${methodPill(message.method)}<strong>#${message.id}</strong></span>
-        ${badge}${sig}
+        <span class="message-badges">${badge}${sig}${size}</span>
         <span class="muted" data-ui-timestamp data-iso="${escapeHtml(message.received_at)}">${escapeHtml(message.received_at)}</span>
       </div>
-      <div class="muted">${escapeHtml(message.path)}${message.query_string ? `?${escapeHtml(message.query_string)}` : ""}</div>
-      <div class="message-body">${escapeHtml(body)}</div>
+      <div class="message-path">${escapeHtml(message.path)}${message.query_string ? `?${escapeHtml(message.query_string)}` : ""}</div>
+      ${previewHtml}
     </button>
   `;
 }
@@ -241,15 +269,32 @@ function methodPill(method) {
   return `<span class="method method-${m}">${m}</span>`;
 }
 
-function bodyContent(message) {
-  if (!message.body_json) return escapeHtml(message.body_text || message.body_preview || "");
+function formattedBodyText(message) {
+  if (!message.body_json || bodyJsonMode === "raw") {
+    return message.body_text ?? message.body_preview ?? "";
+  }
   return bodyJsonMode === "compact"
-    ? escapeHtml(JSON.stringify(message.body_json))
-    : escapeHtml(JSON.stringify(message.body_json, null, 2));
+    ? JSON.stringify(message.body_json)
+    : JSON.stringify(message.body_json, null, 2);
 }
 
 function bodyModeButton(mode, label, active) {
   return `<button type="button" class="toggle-btn ${active ? "active" : ""}" data-body-mode="${mode}">${label}</button>`;
+}
+
+function renderKvRows(entries) {
+  if (!entries.length) return `<p class="muted">None</p>`;
+  return `<div class="kv-list">${entries.map(([k, v]) => `
+    <div class="kv-row"><span class="kv-key">${escapeHtml(k)}</span><span class="kv-val">${escapeHtml(v)}</span></div>
+  `).join("")}</div>`;
+}
+
+function resetMessageDetail() {
+  currentMessage = null;
+  const detail = document.getElementById("message-detail");
+  if (!detail) return;
+  detail.classList.add("detail-empty");
+  detail.textContent = "Pick a message to see headers and body.";
 }
 
 function renderMessageDetail(message) {
@@ -257,27 +302,61 @@ function renderMessageDetail(message) {
   if (!detail) return;
   const partial = message._partial === true;
   const hasJson = Boolean(message.body_json);
+  const headerEntries = Object.entries(message.headers || {});
   const headersHtml = (!partial || message.headers)
-    ? `<pre class="message-body">${escapeHtml(JSON.stringify(message.headers || {}, null, 2))}</pre>`
+    ? renderKvRows(headerEntries)
     : `<pre class="message-body muted">Loading headers…</pre>`;
+  const queryEntries = message.query_string
+    ? Array.from(new URLSearchParams(message.query_string).entries())
+    : [];
+  const querySection = queryEntries.length
+    ? `<div class="section-head"><h4>Query parameters <span class="count-badge">(${queryEntries.length})</span></h4></div>${renderKvRows(queryEntries)}`
+    : "";
+  const sigStatus = message.signature_status;
+  const sigItem = (sigStatus && sigStatus !== "disabled")
+    ? `<div class="detail-meta-item detail-meta-wide"><span class="detail-meta-label">Signature</span><span class="detail-meta-value"><span class="pill pill-sig-${escapeHtml(sigStatus)}">${escapeHtml(sigStatus)}</span> ${message.signature_details ? escapeHtml(message.signature_details) : ""}</span></div>`
+    : "";
+  const bodyText = formattedBodyText(message);
+  const bodyBlock = bodyText
+    ? `<pre class="message-body">${escapeHtml(bodyText)}</pre>`
+    : (partial && Number(message.body_size) > 0
+      ? `<pre class="message-body muted">Loading body…</pre>`
+      : `<pre class="message-body message-preview-empty">(empty body)</pre>`);
+
   detail.classList.remove("detail-empty");
   detail.innerHTML = `
-   <h3 class="section-title">${methodPill(message.method)} #${message.id}</h3>
-   <p class="muted" data-ui-timestamp data-iso="${escapeHtml(message.received_at)}">${escapeHtml(message.received_at)}</p>
-   <p><strong>Path:</strong> ${escapeHtml(message.path)}${message.query_string ? `?${escapeHtml(message.query_string)}` : ""}</p>
-   <p><strong>Remote:</strong> ${escapeHtml(message.remote_addr || "—")} | <strong>Content-Type:</strong> ${escapeHtml(message.content_type || "—")}</p>
-   ${message.signature_status && message.signature_status !== "disabled" ? `<p><strong>Signature:</strong> ${escapeHtml(message.signature_status)} ${message.signature_details ? `(${escapeHtml(message.signature_details)})` : ""}</p>` : ""}
-   <div class="toolbar">
-     <button type="button" data-copy-curl="/api/messages/${message.id}/curl">Copy cURL</button>
-     <a class="ghost" href="/api/messages/${message.id}/export">Download JSON</a>
+   <div class="detail-head">
+     <div>
+       <h3 class="section-title">${methodPill(message.method)} #${message.id}</h3>
+       <p class="muted" data-ui-timestamp data-iso="${escapeHtml(message.received_at)}">${escapeHtml(message.received_at)}</p>
+     </div>
+     <div class="toolbar">
+       <button type="button" data-copy-curl="/api/messages/${message.id}/curl">Copy cURL</button>
+       <a class="ghost" href="/api/messages/${message.id}/export">Download JSON</a>
+       <button type="button" class="ghost-danger" data-delete-message="${message.id}">Delete</button>
+     </div>
    </div>
-   <h4>Headers</h4>
+   <div class="detail-meta-grid">
+     <div class="detail-meta-item detail-meta-wide"><span class="detail-meta-label">Path</span><span class="detail-meta-value"><code>${escapeHtml(message.path)}${message.query_string ? `?${escapeHtml(message.query_string)}` : ""}</code></span></div>
+     <div class="detail-meta-item"><span class="detail-meta-label">Remote</span><span class="detail-meta-value">${escapeHtml(message.remote_addr || "—")}</span></div>
+     <div class="detail-meta-item"><span class="detail-meta-label">Content-Type</span><span class="detail-meta-value">${escapeHtml(message.content_type || "—")}</span></div>
+     <div class="detail-meta-item"><span class="detail-meta-label">Payload size</span><span class="detail-meta-value">${escapeHtml(formatBytes(message.body_size))}</span></div>
+     ${sigItem}
+   </div>
+   ${querySection}
+   <div class="section-head">
+     <h4>Headers ${!partial ? `<span class="count-badge">(${headerEntries.length})</span>` : ""}</h4>
+     ${(!partial && headerEntries.length) ? `<button type="button" class="icon-btn" data-copy-headers>Copy JSON</button>` : ""}
+   </div>
    ${headersHtml}
    <div class="body-head">
-     <h4>Body</h4>
-     ${hasJson ? `<div class="body-toggle">${bodyModeButton("pretty", "Pretty", bodyJsonMode === "pretty")}${bodyModeButton("compact", "Compact", bodyJsonMode === "compact")}</div>` : ""}
+     <h4>Body <span class="count-badge">(${escapeHtml(formatBytes(message.body_size))})</span></h4>
+     <div class="body-toggle">
+       ${hasJson ? `${bodyModeButton("pretty", "Pretty", bodyJsonMode === "pretty")}${bodyModeButton("compact", "Compact", bodyJsonMode === "compact")}${bodyModeButton("raw", "Raw", bodyJsonMode === "raw")}` : ""}
+       ${bodyText ? `<button type="button" class="icon-btn" data-copy-body>Copy body</button>` : ""}
+     </div>
    </div>
-   <pre class="message-body">${bodyContent(message)}</pre>
+   ${bodyBlock}
   `;
   renderTimestamps(detail);
   detail.querySelectorAll("[data-body-mode]").forEach((button) => {
@@ -302,23 +381,46 @@ function hasActiveFilters() {
   return Object.values(currentFilters).some(Boolean);
 }
 
+function readHashMessageId() {
+  const match = /^#msg-(\d+)$/.exec(window.location.hash || "");
+  return match ? Number(match[1]) : null;
+}
+
+function setHashMessageId(id) {
+  const url = `${window.location.pathname}${window.location.search}${id ? `#msg-${id}` : ""}`;
+  window.history.replaceState(null, "", url);
+}
+
+function updateAdvancedFilterIndicator() {
+  const advancedBtn = document.getElementById("filter-advanced-btn");
+  if (!advancedBtn) return;
+  advancedBtn.classList.toggle("active", Boolean(currentFilters.headerKey || currentFilters.headerValue));
+}
+
 function updateMessagesCount(container) {
   const countEl = document.getElementById("messages-count");
-  if (!countEl) return;
   const shownCount = container.querySelectorAll(".message-item").length;
-  if (hasActiveFilters()) {
-    countEl.textContent = shownCount > 0 ? `(${shownCount}${nextBeforeId ? "+" : ""} filtered)` : "";
-  } else if (knownTotalMessages != null && knownTotalMessages > 0) {
-    countEl.textContent = shownCount < knownTotalMessages
-      ? `(${shownCount} of ${knownTotalMessages})`
-      : `(${knownTotalMessages})`;
-  } else {
-    countEl.textContent = "";
+  if (countEl) {
+    if (hasActiveFilters()) {
+      countEl.textContent = shownCount > 0 ? `(${shownCount}${nextBeforeId ? "+" : ""} filtered)` : "(0 filtered)";
+    } else if (knownTotalMessages != null && knownTotalMessages > 0) {
+      countEl.textContent = shownCount < knownTotalMessages
+        ? `(${shownCount} of ${knownTotalMessages})`
+        : `(${knownTotalMessages})`;
+    } else {
+      countEl.textContent = "";
+    }
+  }
+  const clearBtn = document.getElementById("clear-messages-btn");
+  if (clearBtn) {
+    const hasAny = (knownTotalMessages ?? shownCount) > 0;
+    clearBtn.classList.toggle("hidden", !hasAny);
   }
 }
 
-async function showMessage(messageId) {
+async function showMessage(messageId, { updateHash = true } = {}) {
   const id = Number(messageId);
+  if (!Number.isFinite(id)) return;
 
   // Cancel any pending detail fetch
   if (currentAbortController) {
@@ -328,6 +430,7 @@ async function showMessage(messageId) {
 
   // Mark active immediately
   setActiveMessage(id);
+  if (updateHash) setHashMessageId(id);
 
   // Serve from cache (already fully fetched)
   if (messageDetailCache.has(id)) {
@@ -350,7 +453,7 @@ async function showMessage(messageId) {
   currentAbortController = ac;
   try {
     const res = await fetch(`/api/messages/${id}`, { signal: ac.signal });
-    if (!res.ok) throw new Error("message detail failed");
+    if (!res.ok) throw new Error(res.status === 404 ? "message not found" : "message detail failed");
     const data = await res.json();
     if (currentAbortController !== ac) return; // superseded by a newer click
     currentMessage = data.message;
@@ -417,9 +520,51 @@ function applyMessagesResponse(data, { append = false } = {}) {
   const loadMoreBtn = document.getElementById("load-more-btn");
   if (loadMoreBtn) {
     loadMoreBtn.disabled = !nextBeforeId;
-    loadMoreBtn.style.display = nextBeforeId ? "" : "none";
+    loadMoreBtn.classList.toggle("hidden", !nextBeforeId);
     loadMoreBtn.textContent = nextBeforeId ? `Load more (${currentPageSize})` : "Load more";
   }
+}
+
+function applyMessageDeleted(messageId) {
+  const id = Number(messageId);
+  listMessageCache.delete(id);
+  messageDetailCache.delete(id);
+  curlTextCache.delete(id);
+  const container = document.getElementById("messages");
+  if (!container) return;
+  const el = container.querySelector(`[data-message-id="${id}"]`);
+  if (el) {
+    el.remove();
+    if (knownTotalMessages != null && knownTotalMessages > 0) knownTotalMessages -= 1;
+  }
+  if (!container.querySelector(".message-item")) {
+    container.innerHTML = `<p class="muted">No messages yet.</p>`;
+  }
+  if (currentMessage && Number(currentMessage.id) === id) {
+    resetMessageDetail();
+    setHashMessageId(null);
+  }
+  updateMessagesCount(container);
+}
+
+function applyMessagesCleared() {
+  listMessageCache.clear();
+  messageDetailCache.clear();
+  curlTextCache.clear();
+  nextBeforeId = null;
+  knownTotalMessages = 0;
+  const container = document.getElementById("messages");
+  if (container) {
+    container.innerHTML = `<p class="muted">No messages yet.</p>`;
+    updateMessagesCount(container);
+  }
+  const loadMoreBtn = document.getElementById("load-more-btn");
+  if (loadMoreBtn) {
+    loadMoreBtn.disabled = true;
+    loadMoreBtn.classList.add("hidden");
+  }
+  resetMessageDetail();
+  setHashMessageId(null);
 }
 
 async function refreshMessages(options = {}) {
@@ -566,7 +711,13 @@ function setupLiveStream(binId, afterId = 0, onEvent = null) {
   source.addEventListener("message", (event) => {
     try {
       const payload = JSON.parse(event.data || "{}");
-      if (payload?.message) {
+      if (payload?.type === "message_deleted" && payload.message_id != null) {
+        applyMessageDeleted(payload.message_id);
+        onEvent?.(payload);
+      } else if (payload?.type === "messages_cleared") {
+        applyMessagesCleared();
+        onEvent?.(payload);
+      } else if (payload?.message) {
         appendMessageFromStream(payload.message);
         onEvent?.({ type: "new_message", message: payload.message });
       } else {
@@ -618,6 +769,10 @@ function startLiveUpdates(binId, afterId = 0) {
     if (isLeader) return; // leader already applied this event locally
     if (payload?.type === "new_message" && payload.message) {
       appendMessageFromStream(payload.message);
+    } else if (payload?.type === "message_deleted" && payload.message_id != null) {
+      applyMessageDeleted(payload.message_id);
+    } else if (payload?.type === "messages_cleared") {
+      applyMessagesCleared();
     } else if (payload?.type === "status") {
       liveStreamConnected = Boolean(payload.connected);
       stopMessagesPolling();
@@ -670,13 +825,33 @@ document.addEventListener("DOMContentLoaded", () => {
     const bootstrap = readBootstrapMessages(messages);
     const initial = bootstrap ? Promise.resolve(applyMessagesResponse(bootstrap)) : refreshMessages();
     initial.then(() => {
+      const hashMsgId = readHashMessageId();
+      if (hashMsgId) {
+        showMessage(hashMsgId, { updateHash: false }).catch((error) => showToast(error.message, "error"));
+      }
       startLiveUpdates(binId, maxKnownMessageId);
     }).catch((error) => {
       messages.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
       startMessagesPolling(MESSAGE_FALLBACK_POLL_MIN_MS);
     });
+    window.addEventListener("hashchange", () => {
+      const hashMsgId = readHashMessageId();
+      if (hashMsgId && (!currentMessage || Number(currentMessage.id) !== hashMsgId)) {
+        showMessage(hashMsgId, { updateHash: false }).catch((error) => showToast(error.message, "error"));
+      }
+    });
     document.getElementById("refresh-btn")?.addEventListener("click", () => {
       refreshMessages().catch((error) => showToast(error.message, "error"));
+    });
+    document.getElementById("clear-messages-btn")?.addEventListener("click", async () => {
+      if (!window.confirm("Clear all messages in this bin? The bin and its ingest URL will stay active.")) return;
+      try {
+        await clearBinMessages(binId);
+        applyMessagesCleared();
+        showToast("Cleared messages");
+      } catch (error) {
+        showToast(error.message, "error");
+      }
     });
     document.getElementById("load-more-btn")?.addEventListener("click", () => {
       refreshMessages({ append: true }).catch((error) => showToast(error.message, "error"));
@@ -701,6 +876,7 @@ document.addEventListener("DOMContentLoaded", () => {
         headerValue: String(formData.get("header_value") || "").trim(),
       };
       nextBeforeId = null;
+      updateAdvancedFilterIndicator();
       refreshMessages().catch((error) => showToast(error.message, "error"));
     });
     document.getElementById("filter-reset-btn")?.addEventListener("click", () => {
@@ -708,15 +884,17 @@ document.addEventListener("DOMContentLoaded", () => {
       if (filterForm) filterForm.reset();
       currentFilters = { method: "", q: "", headerKey: "", headerValue: "" };
       nextBeforeId = null;
+      updateAdvancedFilterIndicator();
       refreshMessages().catch((error) => showToast(error.message, "error"));
     });
     const advancedBtn = document.getElementById("filter-advanced-btn");
     const advancedPanel = document.getElementById("filter-advanced");
     if (advancedBtn && advancedPanel) {
       advancedBtn.addEventListener("click", () => {
-        const open = !advancedPanel.classList.contains("hidden");
-        advancedPanel.classList.toggle("hidden", open);
-        advancedBtn.textContent = open ? "Advanced ▾" : "Advanced ▲";
+        const willCollapse = !advancedPanel.classList.contains("hidden");
+        advancedPanel.classList.toggle("hidden", willCollapse);
+        advancedBtn.setAttribute("aria-expanded", String(!willCollapse));
+        advancedBtn.textContent = willCollapse ? "Advanced ▾" : "Advanced ▲";
       });
     }
     document.addEventListener("visibilitychange", () => {
@@ -727,6 +905,10 @@ document.addEventListener("DOMContentLoaded", () => {
       const target = event.target;
       const isTyping = target instanceof HTMLElement
         && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (event.key === "Escape" && isTyping && target instanceof HTMLElement) {
+        target.blur();
+        return;
+      }
       if (event.key === "/" && !isTyping) {
         event.preventDefault();
         document.querySelector('#message-filter-form input[name="q"]')?.focus();
@@ -811,6 +993,40 @@ document.addEventListener("DOMContentLoaded", () => {
     if (deleteButton) {
       event.preventDefault();
       handleDeleteBin(deleteButton).catch((error) => showToast(error.message, "error"));
+      return;
+    }
+    const deleteMsgBtn = event.target.closest("[data-delete-message]");
+    if (deleteMsgBtn) {
+      event.preventDefault();
+      const msgId = Number(deleteMsgBtn.dataset.deleteMessage);
+      deleteMessage(msgId)
+        .then(() => {
+          applyMessageDeleted(msgId);
+          showToast(`Deleted message #${msgId}`);
+        })
+        .catch((error) => showToast(error.message, "error"));
+      return;
+    }
+    const copyBodyBtn = event.target.closest("[data-copy-body]");
+    if (copyBodyBtn && currentMessage) {
+      event.preventDefault();
+      navigator.clipboard.writeText(formattedBodyText(currentMessage))
+        .then(() => {
+          showToast("Body copied");
+          flashCopied(copyBodyBtn, "Copied");
+        })
+        .catch(() => showToast("Copy failed", "error"));
+      return;
+    }
+    const copyHeadersBtn = event.target.closest("[data-copy-headers]");
+    if (copyHeadersBtn && currentMessage) {
+      event.preventDefault();
+      navigator.clipboard.writeText(JSON.stringify(currentMessage.headers || {}, null, 2))
+        .then(() => {
+          showToast("Headers copied");
+          flashCopied(copyHeadersBtn, "Copied");
+        })
+        .catch(() => showToast("Copy failed", "error"));
       return;
     }
     const curlButton = event.target.closest("[data-copy-curl]");

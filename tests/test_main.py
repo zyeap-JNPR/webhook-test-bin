@@ -43,7 +43,7 @@ def test_create_bin_defaults_and_invalid_json(client):
 
     invalid = client.post(
         "/api/bins",
-        data="invalid-json",
+        content="invalid-json",
         headers={"content-type": "application/json"},
     )
     assert invalid.status_code == 400
@@ -262,12 +262,54 @@ def test_list_messages_returns_slim_shape(client):
         assert key not in msg, f"{key} should not be in list response"
 
 
-
+def test_ingest_methods_and_subpaths(client):
     create = client.post("/api/bins", json={"name": "methods"})
     bin_id = create.json()["bin"]["id"]
-    for method in ("put", "patch", "delete", "options"):
-        res = client.request(method.upper(), f"/hooks/{bin_id}", content="x")
+    for method in ("get", "put", "patch", "delete", "options"):
+        res = client.request(method.upper(), f"/hooks/{bin_id}", content="x" if method != "get" else None)
         assert res.status_code == 201
+
+    head_res = client.head(f"/hooks/{bin_id}/health/ping?probe=1")
+    assert head_res.status_code == 200
+    assert head_res.content == b""
+
+    sub_res = client.post(
+        f"/hooks/{bin_id}/v1/device-events?site=hq",
+        json={"topic": "device-events"},
+        headers={"x-forwarded-for": "203.0.113.9, 10.0.0.1"},
+    )
+    assert sub_res.status_code == 201
+    msg_id = sub_res.json()["message"]["id"]
+    detail = client.get(f"/api/messages/{msg_id}").json()["message"]
+    assert detail["path"] == f"/hooks/{bin_id}/v1/device-events"
+    assert detail["query_string"] == "site=hq"
+    assert detail["remote_addr"] == "203.0.113.9"
+
+
+def test_delete_single_message_and_clear_bin_messages(client):
+    create = client.post("/api/bins", json={"name": "cleanup"})
+    bin_id = create.json()["bin"]["id"]
+    m1 = client.post(f"/hooks/{bin_id}", json={"n": 1}).json()["message"]["id"]
+    client.post(f"/hooks/{bin_id}", json={"n": 2})
+
+    first_list = client.get(f"/api/bins/{bin_id}/messages")
+    etag_before = first_list.headers["etag"]
+
+    del_res = client.delete(f"/api/messages/{m1}")
+    assert del_res.status_code == 200
+    assert del_res.json() == {"status": "deleted", "message_id": m1, "bin_id": bin_id}
+    assert client.get(f"/api/messages/{m1}").status_code == 404
+    assert client.delete(f"/api/messages/{m1}").status_code == 404
+
+    after_del = client.get(f"/api/bins/{bin_id}/messages", headers={"if-none-match": etag_before})
+    assert after_del.status_code == 200
+    assert len(after_del.json()["messages"]) == 1
+
+    clear_res = client.delete(f"/api/bins/{bin_id}/messages")
+    assert clear_res.status_code == 200
+    assert clear_res.json() == {"status": "cleared", "bin_id": bin_id, "deleted": 1}
+    assert client.get(f"/api/bins/{bin_id}/messages").json()["messages"] == []
+    assert client.delete("/api/bins/missing/messages").status_code == 404
 
 
 def test_ingest_missing_bin_returns_404(client):
@@ -382,6 +424,7 @@ def test_export_endpoints(client):
     curl_export = client.get(f"/api/messages/{msg_id}/curl")
     assert curl_export.status_code == 200
     assert "curl -X POST" in curl_export.text
+    assert f"http://testserver/hooks/{bin_id}" in curl_export.text
 
     ndjson = client.get(f"/api/bins/{bin_id}/export.ndjson")
     assert ndjson.status_code == 200

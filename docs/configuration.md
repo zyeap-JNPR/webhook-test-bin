@@ -25,8 +25,3 @@ All settings are environment variables. Every variable is optional.
   `x-hub-signature-256`, `x-mist-signature-v2`, `x-signature`.
 - **Retention** runs per bin; combine days + max-messages to cap disk usage on
   long-running deployments.
-
-## UI-only toggles
-
-- Append `?debug=1` to a bin dashboard URL to reveal the "Seed sample" button.
-  This is a client-side flag, not an environment variable.

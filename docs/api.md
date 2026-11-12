@@ -12,11 +12,13 @@ Base URL is your local or public host. Examples below use
 | POST | `/api/bins` | Create bin |
 | GET | `/api/bins` | List bins |
 | DELETE | `/api/bins/{bin_id}` | Delete bin + messages |
+| DELETE | `/api/bins/{bin_id}/messages` | Clear all messages in bin |
 | POST | `/delete/{bin_id}` | Delete bin + redirect home |
-| POST/PUT/PATCH/DELETE/OPTIONS | `/hooks/{bin_id}` | Store webhook |
+| GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS | `/hooks/{bin_id}` (and `/hooks/{bin_id}/{subpath}`) | Store webhook |
 | GET | `/api/bins/{bin_id}/messages` | List messages |
 | GET | `/api/bins/{bin_id}/stream` | SSE live update stream |
 | GET | `/api/messages/{message_id}` | Message detail |
+| DELETE | `/api/messages/{message_id}` | Delete single message |
 | GET | `/api/messages/{message_id}/export` | Download message JSON |
 | GET | `/api/messages/{message_id}/curl` | Replay cURL command |
 | GET | `/api/bins/{bin_id}/export.ndjson` | Export bin as NDJSON |
