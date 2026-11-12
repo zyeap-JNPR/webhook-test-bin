@@ -1,14 +1,27 @@
 async function createBin(form) {
-  const formData = new FormData(form);
-  const payload = { name: formData.get("name") };
-  const res = await fetch("/api/bins", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error("bin create failed");
-  const data = await res.json();
-  window.location.href = data.dashboard_url;
+  const submitBtn = form.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Creating…";
+  }
+  try {
+    const formData = new FormData(form);
+    const payload = { name: formData.get("name") };
+    const res = await fetch("/api/bins", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error("bin create failed");
+    const data = await res.json();
+    window.location.href = data.dashboard_url;
+  } catch (err) {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Create bin";
+    }
+    throw err;
+  }
 }
 
 function buildMessageQuery(params) {
@@ -185,6 +198,39 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function applyHomepageBinFilter() {
+  const input = document.getElementById("bin-search-input");
+  const binsContainer = document.querySelector("[data-homepage-bins]");
+  const shownEl = document.querySelector("[data-homepage-shown-count]");
+  if (!binsContainer) return;
+  const cards = Array.from(binsContainer.querySelectorAll("[data-bin-card]"));
+  const q = (input?.value || "").trim().toLowerCase();
+  let visibleCount = 0;
+  for (const card of cards) {
+    const match = !q
+      || (card.dataset.binName || "").includes(q)
+      || (card.dataset.binId || "").includes(q);
+    card.classList.toggle("hidden", !match);
+    if (match) visibleCount += 1;
+  }
+  let noMatchEl = binsContainer.querySelector("[data-bin-filter-empty]");
+  if (cards.length > 0 && visibleCount === 0) {
+    if (!noMatchEl) {
+      binsContainer.insertAdjacentHTML(
+        "beforeend",
+        `<article class="empty" data-bin-filter-empty><h2>No matching bins</h2><p>Clear filter to see all ${cards.length} bins.</p></article>`,
+      );
+    }
+  } else if (noMatchEl) {
+    noMatchEl.remove();
+  }
+  if (shownEl) {
+    shownEl.textContent = q && visibleCount !== cards.length
+      ? `(${visibleCount} of ${cards.length})`
+      : `(${cards.length})`;
+  }
+}
+
 function renderHomepage(data) {
   const bins = data.bins || [];
   const root = document.querySelector("[data-homepage-root]");
@@ -193,6 +239,7 @@ function renderHomepage(data) {
   const totalBins = document.querySelector("[data-homepage-total-bins]");
   const totalMessages = document.querySelector("[data-homepage-total-messages]");
   const latestActivity = document.querySelector("[data-homepage-latest-activity]");
+  const toolbar = document.querySelector("[data-homepage-toolbar]");
   const binsContainer = document.querySelector("[data-homepage-bins]");
 
   if (totalBins) totalBins.textContent = String(bins.length);
@@ -201,31 +248,39 @@ function renderHomepage(data) {
     latestActivity.dataset.iso = bins.find((bin) => bin.last_message_at)?.last_message_at || "";
     latestActivity.textContent = formatTimestamp(latestActivity.dataset.iso);
   }
+  if (toolbar) toolbar.classList.toggle("hidden", bins.length === 0);
   if (!binsContainer) return;
-  binsContainer.innerHTML = bins.map((bin) => `
-    <article class="card">
+  binsContainer.innerHTML = bins.map((bin) => {
+    const count = Number(bin.message_count || 0);
+    const curlCmd = `curl -X POST '${baseUrl}/hooks/${bin.id}' -H 'content-type: application/json' -d '{"event":"ping"}'`;
+    return `
+    <article class="card" data-bin-card data-bin-name="${escapeHtml(String(bin.name || "").toLowerCase())}" data-bin-id="${escapeHtml(String(bin.id || "").toLowerCase())}">
       <div class="card-head">
         <div>
           <h2><a href="/bins/${bin.id}">${escapeHtml(bin.name)}</a></h2>
-          <p class="muted">${escapeHtml(bin.id)}</p>
+          <p class="muted mono">${escapeHtml(bin.id)}</p>
         </div>
-        <span class="pill">${bin.message_count} msgs</span>
+        <span class="pill">${count} ${count === 1 ? "msg" : "msgs"}</span>
       </div>
       <dl class="meta">
         <div>
           <dt>Ingest URL</dt>
           <dd class="meta-url-row">
             <code>/hooks/${bin.id}</code>
-            <button type="button" class="icon-btn" data-copy-text="${escapeHtml(`${baseUrl}/hooks/${bin.id}`)}">Copy</button>
+            <button type="button" class="icon-btn" data-copy-text="${escapeHtml(`${baseUrl}/hooks/${bin.id}`)}">Copy URL</button>
+            <button type="button" class="icon-btn" data-copy-text="${escapeHtml(curlCmd)}">Copy cURL</button>
           </dd>
         </div>
         <div><dt>Last msg</dt><dd><span data-ui-timestamp data-iso="${escapeHtml(bin.last_message_at || "")}">${escapeHtml(bin.last_message_at || "—")}</span></dd></div>
       </dl>
       <div class="card-footer">
+        <a class="ghost card-open" href="/bins/${bin.id}">Open →</a>
         <button type="button" class="ghost-danger" data-delete-bin="${bin.id}">Delete bin</button>
       </div>
     </article>
-  `).join("") || `<article class="empty"><h2>No bins yet</h2><p>Create one, then POST to its ingest URL.</p></article>`;
+  `;
+  }).join("") || `<article class="empty"><h2>No bins yet</h2><p>Create a bin above, then send requests to <code>/hooks/&lt;bin_id&gt;</code>.</p></article>`;
+  applyHomepageBinFilter();
   renderTimestamps(document);
 }
 
@@ -936,6 +991,26 @@ document.addEventListener("DOMContentLoaded", () => {
   const homepage = document.querySelector("[data-homepage-root]");
   if (homepage) {
     lastHomepageRefreshAt = Date.now();
+    const binSearchInput = document.getElementById("bin-search-input");
+    binSearchInput?.addEventListener("input", () => applyHomepageBinFilter());
+    document.addEventListener("keydown", (event) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target;
+      const isTyping = target instanceof HTMLElement
+        && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (event.key === "Escape" && target === binSearchInput) {
+        if (binSearchInput.value) {
+          binSearchInput.value = "";
+          applyHomepageBinFilter();
+        }
+        binSearchInput.blur();
+        return;
+      }
+      if (event.key === "/" && !isTyping && binSearchInput && !binSearchInput.closest(".hidden")) {
+        event.preventDefault();
+        binSearchInput.focus();
+      }
+    });
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) return;
       if (!shouldRefreshOnVisible(lastHomepageRefreshAt)) return;

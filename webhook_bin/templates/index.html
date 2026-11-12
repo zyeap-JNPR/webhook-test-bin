@@ -8,7 +8,7 @@
       Create a bin, point any webhook sender at its ingest URL, then inspect headers and payloads in one place.
     </p>
     <form id="create-bin-form" class="inline-form">
-      <input name="name" placeholder="Bin name" />
+      <input name="name" placeholder="Bin name (optional)" aria-label="New bin name" />
       <button type="submit" class="btn-primary">Create bin</button>
     </form>
   </div>
@@ -21,41 +21,53 @@
       <span class="stat-label">Messages</span>
       <span class="stat-value" data-homepage-total-messages>{{ total_messages }}</span>
     </div>
-    <div class="stat">
+    <div class="stat stat-wide">
       <span class="stat-label">Latest activity</span>
-      <span class="stat-value" data-homepage-latest-activity data-ui-timestamp data-iso="{{ latest_activity or '' }}">{{ latest_activity or "—" }}</span>
+      <span class="stat-value stat-timestamp" data-homepage-latest-activity data-ui-timestamp data-iso="{{ latest_activity or '' }}">{{ latest_activity or "—" }}</span>
     </div>
   </div>
 </section>
 
+<section class="bins-toolbar{% if not bins %} hidden{% endif %}" data-homepage-toolbar>
+  <h2 class="bins-heading">Bins <span class="count-badge" data-homepage-shown-count>({{ total_bins }})</span></h2>
+  <input
+    type="search"
+    id="bin-search-input"
+    placeholder="Filter bins by name or ID… (/)"
+    aria-label="Filter bins by name or ID"
+  />
+</section>
+
 <section class="grid" data-homepage-bins>
   {% for bin in bins %}
-  <article class="card">
+  <article class="card" data-bin-card data-bin-name="{{ bin.name | lower }}" data-bin-id="{{ bin.id | lower }}">
     <div class="card-head">
       <div>
         <h2><a href="/bins/{{ bin.id }}">{{ bin.name }}</a></h2>
-        <p class="muted">{{ bin.id }}</p>
+        <p class="muted mono">{{ bin.id }}</p>
       </div>
-      <span class="pill">{{ bin.message_count }} msgs</span>
+      <span class="pill">{{ bin.message_count }} {{ "msg" if bin.message_count == 1 else "msgs" }}</span>
     </div>
     <dl class="meta">
       <div>
         <dt>Ingest URL</dt>
         <dd class="meta-url-row">
           <code>/hooks/{{ bin.id }}</code>
-          <button type="button" class="icon-btn" data-copy-text="{{ base_url }}/hooks/{{ bin.id }}">Copy</button>
+          <button type="button" class="icon-btn" data-copy-text="{{ base_url }}/hooks/{{ bin.id }}">Copy URL</button>
+          <button type="button" class="icon-btn" data-copy-text="curl -X POST '{{ base_url }}/hooks/{{ bin.id }}' -H 'content-type: application/json' -d '{&quot;event&quot;:&quot;ping&quot;}'">Copy cURL</button>
         </dd>
       </div>
       <div><dt>Last msg</dt><dd><span data-ui-timestamp data-iso="{{ bin.last_message_at or '' }}">{{ bin.last_message_at or "—" }}</span></dd></div>
     </dl>
     <div class="card-footer">
+      <a class="ghost card-open" href="/bins/{{ bin.id }}">Open →</a>
       <button type="button" class="ghost-danger" data-delete-bin="{{ bin.id }}">Delete bin</button>
     </div>
   </article>
   {% else %}
   <article class="empty">
     <h2>No bins yet</h2>
-    <p>Create one, then POST to its ingest URL.</p>
+    <p>Create a bin above, then send requests to <code>/hooks/&lt;bin_id&gt;</code>.</p>
   </article>
   {% endfor %}
 </section>

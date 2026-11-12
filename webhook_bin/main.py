@@ -484,58 +484,67 @@ async def stream_messages(bin_id: str, request: Request, after_id: int = 0):
     queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=256)
     _STREAM_SUBSCRIBERS.setdefault(bin_id, set()).add(queue)
 
-    async def event_gen():
+    try:
         try:
             header_event_id = int(request.headers.get("last-event-id", "0") or "0")
         except ValueError:
             header_event_id = 0
         last_event_id = max(0, after_id, header_event_id)
-        try:
-            while True:
-                missed_messages = db.list_messages_after(bin_id, after_id=last_event_id, limit=500)
-                if not missed_messages:
-                    break
-                for message in missed_messages:
-                    latest_id = int(message["id"])
-                    last_event_id = latest_id
-                    event = {
-                        "type": "new_message",
-                        "latest_id": latest_id,
-                        "message": message,
-                    }
-                    yield f"id: {latest_id}\nevent: message\ndata: {json.dumps(event)}\n\n"
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except TimeoutError:
-                    yield ": keepalive\n\n"
-                    continue
-                if event.get("type") == "new_message":
-                    latest_id = int(event["latest_id"])
-                    if latest_id <= last_event_id:
-                        continue
-                    last_event_id = latest_id
-                    yield f"id: {latest_id}\nevent: message\ndata: {json.dumps(event)}\n\n"
-                else:
-                    yield f"event: message\ndata: {json.dumps(event)}\n\n"
-        finally:
-            subscribers = _STREAM_SUBSCRIBERS.get(bin_id)
-            if subscribers is not None:
-                subscribers.discard(queue)
-                if not subscribers:
-                    _STREAM_SUBSCRIBERS.pop(bin_id, None)
 
-    return StreamingResponse(
-        event_gen(),
-        media_type="text/event-stream",
-        headers={
-            "cache-control": "no-cache",
-            "x-accel-buffering": "no",
-            "connection": "keep-alive",
-        },
-    )
+        async def event_gen():
+            nonlocal last_event_id
+            try:
+                yield ": connected\n\n"
+                while True:
+                    missed_messages = db.list_messages_after(bin_id, after_id=last_event_id, limit=500)
+                    if not missed_messages:
+                        break
+                    for message in missed_messages:
+                        latest_id = int(message["id"])
+                        last_event_id = latest_id
+                        event = {
+                            "type": "new_message",
+                            "latest_id": latest_id,
+                            "message": message,
+                        }
+                        yield f"id: {latest_id}\nevent: message\ndata: {json.dumps(event)}\n\n"
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    if event.get("type") == "new_message":
+                        latest_id = int(event["latest_id"])
+                        if latest_id <= last_event_id:
+                            continue
+                        last_event_id = latest_id
+                        yield f"id: {latest_id}\nevent: message\ndata: {json.dumps(event)}\n\n"
+                    else:
+                        yield f"event: message\ndata: {json.dumps(event)}\n\n"
+            finally:
+                subscribers = _STREAM_SUBSCRIBERS.get(bin_id)
+                if subscribers is not None:
+                    subscribers.discard(queue)
+                    if not subscribers:
+                        _STREAM_SUBSCRIBERS.pop(bin_id, None)
+
+        return StreamingResponse(
+            event_gen(),
+            media_type="text/event-stream",
+            headers={
+                "cache-control": "no-cache",
+                "x-accel-buffering": "no",
+                "connection": "keep-alive",
+            },
+        )
+    except Exception:
+        subscribers = _STREAM_SUBSCRIBERS.get(bin_id)
+        if subscribers is not None:
+            subscribers.discard(queue)
+        raise
 
 
 _HOOK_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]

@@ -18,6 +18,16 @@ def test_index_page_renders(client):
     res = client.get("/")
     assert res.status_code == 200
     assert "Catch and inspect webhook data" in res.text
+    assert 'class="bins-toolbar hidden"' in res.text
+
+    created = client.post("/api/bins", json={"name": "alpha-bin"}).json()["bin"]
+    client.post(f"/hooks/{created['id']}", json={"ok": True})
+    populated = client.get("/")
+    assert populated.status_code == 200
+    assert 'class="bins-toolbar"' in populated.text
+    assert "1 msg</span>" in populated.text
+    assert "Copy cURL" in populated.text
+    assert f'href="/bins/{created["id"]}">Open' in populated.text
 
 
 def test_favicon_and_robots_routes(client):
@@ -500,11 +510,14 @@ def test_stream_replays_messages_after_cursor(client):
         async def is_disconnected(self):
             return True
 
-    async def read_first_event():
+    async def read_events():
         response = await main.stream_messages("stream02", FakeRequest(), after_id=first["id"])
-        return await anext(response.body_iterator)
+        first_chunk = await anext(response.body_iterator)
+        second_chunk = await anext(response.body_iterator)
+        return first_chunk + second_chunk
 
-    event = asyncio.run(read_first_event())
+    event = asyncio.run(read_events())
+    assert ": connected" in event
     assert f"id: {second['id']}" in event
     assert '"body_preview": "second"' in event
 

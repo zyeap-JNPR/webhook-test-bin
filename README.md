@@ -1,39 +1,39 @@
 # Webhook Bin
 
 A local-first webhook inbox for inspecting webhook payloads, headers, and
-traffic — like a self-hosted webhook.site you can run on your laptop or a
+traffic — like a self-hosted `webhook.site` you can run on your laptop or a
 Raspberry Pi.
 
-Create a bin, point any webhook sender at its ingest URL, then read the headers
-and parsed body in a live dashboard.
+Create a bin, point any webhook sender at its ingest URL, and inspect incoming
+requests in a real-time dashboard.
 
 ## Screenshots
 
-**Home** — bins overview with live totals and per-bin ingest URLs:
+**Home** — bins overview with live totals, instant filter, and one-click URL / cURL copy:
 
 ![Home page](docs/screenshots/homepage.png)
 
-**Bin dashboard** — message list on the left, full headers + body on the right:
+**Bin dashboard** — live message feed on the left, structured query/headers and JSON/raw body on the right:
 
 ![Bin dashboard](docs/screenshots/bin-dashboard.png)
 
 ## Features
 
-- Unique ingest URL per bin (including arbitrary subpaths `/hooks/<bin_id>/...`), backed by SQLite
-- Live message updates (SSE with cross-tab leader election) and polling fallback
-- Search / header filter + cursor pagination
-- HTTP method color-coding, structured headers/query view, and JSON pretty/compact/raw view
-- Export to JSON, NDJSON, one-click body/header copy, or a runnable replay cURL command
-- Delete individual messages or clear a bin without changing its ingest URL
-- UTC / PT / Relative timestamp toggle
-- Optional HMAC signature verification
-- Optional retention policy (by age and/or message count)
-- JSON API + Prometheus `/metrics`
+- **Flexible ingest** — unique `/hooks/<bin_id>` URL per bin (accepts `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, plus arbitrary subpaths `/hooks/<bin_id>/...`), backed by SQLite WAL
+- **Live dashboard** — instant SSR bootstrap + SSE stream (shared across tabs via Web Locks + `BroadcastChannel`) with backoff polling fallback
+- **Rich inspection** — HTTP method badges, payload byte sizes, parsed query parameters & headers, `Pretty` / `Compact` / `Raw` body modes, and `#msg-<id>` deep links
+- **Search & filter** — full-text query, HTTP method filter, header key/value matching, and cursor pagination
+- **Replay & export** — one-click copy for body, headers JSON, or a runnable replay `curl` command; download single message JSON or bin-wide NDJSON
+- **Cleanup without rotating URLs** — delete individual messages or clear all messages in a bin while keeping its ingest URL active
+- **Verification & retention** — optional HMAC-SHA256 verification (`x-signature-sha256`, `x-hub-signature-256`, `x-mist-signature-v2`, `x-signature`) and per-bin retention by age or count
+- **Operations ready** — `UTC` / `PT` / `Rel` timestamps, JSON API, `/healthz`, Prometheus `/metrics`, and SQLite `backup` / `restore` CLI
 
 ## Quickstart
 
+Requires **Python 3.11+**.
+
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 webhook-bin
@@ -41,23 +41,46 @@ webhook-bin
 
 Open:
 
-- UI — http://127.0.0.1:8000/
-- API docs — http://127.0.0.1:8000/docs
+- **Dashboard** — http://127.0.0.1:8000/
+- **OpenAPI docs** — http://127.0.0.1:8000/docs
 
-Then send a test webhook:
+Create a bin in the UI (or via `POST /api/bins`), then send a test webhook:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/hooks/<bin_id> \
+curl -X POST 'http://127.0.0.1:8000/hooks/<bin_id>/v1/events?env=dev' \
   -H 'content-type: application/json' \
   -d '{"hello":"world"}'
 ```
 
-## Usage
+## Keyboard shortcuts
 
-1. Open the dashboard and create a bin.
-2. Copy its ingest URL (`/hooks/<bin_id>`).
-3. Point a webhook sender at it (or use the `curl` above).
-4. Inspect headers and body in the bin dashboard.
+| Key | Where | Action |
+| --- | --- | --- |
+| `/` | Home / Bin dashboard | Focus search / filter input |
+| `Esc` | Search input | Clear / unfocus filter input |
+| `↑` / `↓` | Bin dashboard | Select previous / next message |
+| `r` | Bin dashboard | Refresh message list |
+
+## Configuration summary
+
+All settings are optional environment variables (full details in [docs/configuration.md](docs/configuration.md)):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WEBHOOK_BIN_HOST` / `WEBHOOK_BIN_PORT` | `0.0.0.0` / `8000` | Server bind address and port |
+| `PUBLIC_BASE_URL` | _(request origin)_ | Public base URL used for displayed ingest URLs and replay `curl` commands |
+| `WEBHOOK_BIN_HMAC_SECRET` | _(unset)_ | Shared secret to verify incoming HMAC-SHA256 signature headers |
+| `WEBHOOK_BIN_MAX_BODY_BYTES` | `1048576` (1 MB) | Maximum accepted webhook request body size |
+| `WEBHOOK_BIN_RETENTION_DAYS` / `WEBHOOK_BIN_RETENTION_MAX_MESSAGES` | `0` (disabled) | Per-bin automatic pruning by age (days) and/or message count |
+
+## Data & backups
+
+SQLite data is stored at `data/webhook_bin.db` (created automatically in the working directory).
+
+```bash
+webhook-bin backup ./backups/webhook_bin.db
+webhook-bin restore ./backups/webhook_bin.db
+```
 
 ## Tests
 
@@ -66,15 +89,10 @@ pip install -e '.[test]'
 pytest --cov=webhook_bin --cov-report=term-missing
 ```
 
-## Data
-
-SQLite lives at `data/webhook_bin.db`. Delete the file to reset the app, or use
-`webhook-bin backup` / `webhook-bin restore` (see the API docs).
-
 ## Documentation
 
-- [Configuration](docs/configuration.md) — environment variables
-- [API reference](docs/api.md) — endpoints + `curl` examples
-- [Deployment](docs/deployment.md) — Raspberry Pi, systemd, auto-update
-- [Public access](docs/public-access.md) — tunnel options (Cloudflare, ngrok)
-- [Implementation](docs/implementation.md) — architecture + data model
+- [Configuration](docs/configuration.md) — environment variables & signature headers
+- [API reference](docs/api.md) — REST/SSE endpoints & `curl` examples
+- [Deployment](docs/deployment.md) — Raspberry Pi, `systemd`, auto-deploy cron
+- [Public access](docs/public-access.md) — Cloudflare Tunnel, ngrok, Tailscale Funnel
+- [Implementation](docs/implementation.md) — architecture & SQLite schema
